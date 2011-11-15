@@ -1,15 +1,26 @@
 package com.richdougherty.jsai
 
+import org.mozilla.javascript.Context
+import org.mozilla.javascript.Scriptable
+
 /**
- * @author ${user.name}
+ * @author Rich Dougherty <http://www.richdougherty.com/>
  */
 object App {
   
-  def foo(x : Array[String]) = x.foldLeft("")((a,b) => a + b)
-  
   def main(args : Array[String]) {
-    println( "Hello World!" )
-    println("concat arguments = " + foo(args))
+    // See:
+    //   Embedding JavaScript in Java with Rhino
+    //   http://www.informit.com/guides/content.aspx?g=java&seqNum=562
+    val cx = Context.enter()
+    try {
+      val scope = cx.initStandardObjects()
+      val code = "'Hello '+'world.'"
+      val result = cx.evaluateString(scope, code, "HelloWorld", 1, null)
+      println(result)
+    } finally {
+      Context.exit()
+    }
   }
 
 }
