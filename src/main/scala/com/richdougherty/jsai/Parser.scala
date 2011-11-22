@@ -7,8 +7,8 @@ import org.mozilla.javascript.ast
 import scala.collection.JavaConversions
 import org.mozilla.javascript.ast.AstRoot
 
-class Parser {
-
+object Parser {
+  
   case class Program(ses: List[SourceElement])
   sealed trait SourceElement
   case class StatementSourceElement(statement: Statement) extends SourceElement
