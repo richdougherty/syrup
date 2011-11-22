@@ -1,6 +1,13 @@
 package com.richdougherty.jsai
 
-import Parser._
+import Parser.AdditionOperator
+import Parser.Expression
+import Parser.ExpressionStatement
+import Parser.InfixExpression
+import Parser.LiteralExpression
+import Parser.SourceElement
+import Parser.StatementSourceElement
+import Parser.StringLiteral
 
 class Interpreter {
 
@@ -10,9 +17,9 @@ class Interpreter {
   case class VBool(d: Boolean) extends Val
   case class VStr(d: String) extends Val
   case class VNum(d: Double) extends Val
-  case class VObj(d: ObjRef) extends Val
+  case class VObj(d: ObjPtr) extends Val
 
-  type ObjRef = Int
+  type ObjPtr = Int
   class ObjData(d: Map[PropName, Prop], ipm: InternalPropMap)
 
   type PropName = String
@@ -42,18 +49,26 @@ class Interpreter {
     }
   }
 
-  case class Machine(heap: Map[ObjRef, ObjData])
-  case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: ObjRef)
+  case class Machine(heap: Map[ObjPtr, ObjData])
+  case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: ObjPtr)
 
   case class LexicalEnvironment(er: EnvironmentRecord, outer: Option[EnvironmentRecord])
 
   sealed trait EnvironmentRecord
   case class DeclarativeEnvironmentRecord(bindings: Map[String, Binding]) extends EnvironmentRecord
-  case class ObjectEnvironmentRecord(bindingObj: ObjRef, provideThis: Boolean = false) extends EnvironmentRecord
+  case class ObjectEnvironmentRecord(bindingObj: ObjPtr, provideThis: Boolean = false) extends EnvironmentRecord
 
   sealed trait Binding
   case class MutableBinding(v: Option[Val], canDelete: Boolean) extends Binding
   case class ImmutableBinding(v: Option[Val]) extends Binding
+
+  case class Completion(typ: CompletionType, v: Option[Val], target: Option[String])
+  sealed trait CompletionType
+  case object CNormal extends CompletionType
+  case object CBreak extends CompletionType
+  case class CContinue extends CompletionType
+  case class CReturn extends CompletionType
+  case class CThrow extends CompletionType
 
   def getDirectivePrologue(ses: List[SourceElement]): List[String] = {
     // FIXME: Use quoted, unescaped string literals as required by spec.
@@ -77,21 +92,83 @@ class Interpreter {
     getDirectivePrologue(ses).exists(_ == "use strict")
   }
 
-  def evaluateSourceElements(cxt: ExecutionContext, ses: List[SourceElement]): Val = {
-    VUndef
+  // GetValue(V) in spec
+  def getValue(v: Val): Val = {
+    v // FIXME: Stub
   }
 
-  def interpret(programSource: String): Val = {
+  // ToPrimitive(V) in spec
+  def toPrimitive(v: Val): Val = {
+    v // FIXME: Stub
+  }
+
+  // ToString(V) in spec
+  def toString(v: Val): VStr = {
+    v.asInstanceOf[VStr] // FIXME: Stub
+  }
+
+  // ToNumber(V) in spec
+  def toNumber(v: Val): VNum = {
+    v.asInstanceOf[VNum] // FIXME: Stub
+  }
+
+  def evaluateExpression(expr: Expression): Val = expr match {
+    case InfixExpression(l, op, r) => op match {
+      case AdditionOperator => {
+        val lref = evaluateExpression(l)
+        val lval = getValue(lref)
+        val rref = evaluateExpression(r)
+        val rval = getValue(rref)
+        val lprim = toPrimitive(lval)
+        val rprim = toPrimitive(rval)
+        (lprim, rprim) match {
+          case (VStr(_), _) | (_, VStr(_)) => {
+            val lstr = toString(lprim)
+            val rstr = toString(rprim)
+            VStr(lstr.d + rstr.d)
+          }
+          case _ => {
+            val lnum = toNumber(lprim)
+            val rnum = toNumber(rprim)
+            VNum(lnum.d + rnum.d)
+          }
+        }
+      }
+    }
+    case LiteralExpression(lit) => lit match {
+      case StringLiteral(s) => VStr(s)
+    }
+  }
+
+  def evaluateSourceElement(se: SourceElement): Completion = se match {
+    case StatementSourceElement(st) => st match {
+      case ExpressionStatement(expr) => {
+        val exprRef = evaluateExpression(expr)
+        Completion(CNormal, Some(getValue(exprRef)), None)
+      }
+    }
+  }
+
+  def evaluateSourceElements(ses: List[SourceElement]): Completion = {
+    ses.foldLeft(Completion(CNormal, None, None)) {
+      case (Completion(CNormal, prevVal, prevTarget), se) => {
+        val currCompletion = evaluateSourceElement(se)
+        if (currCompletion.v.isDefined) currCompletion else currCompletion.copy(v = prevVal)
+      }
+      case (abrupt, _) => abrupt
+    }
+  }
+
+  def interpret(programSource: String): Completion = {
     val p = Parser.parse(programSource)
-    val globalRef = 1 // Stubbed ObjRef to global object
-    val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalRef), None)
+    val globalPtr = 1 // Stubbed ObjPtr to global object
+    val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalPtr), None)
 
     val strictMode = hasUseStrictDirective(p.ses)
-    if (p.ses.isEmpty) return VUndef // (normal, empty, empty)
-    val progCxt = ExecutionContext(globalEnv, globalEnv, globalRef)
-    val result = evaluateSourceElements(progCxt, p.ses)
-    // return result
-    VUndef
+    if (p.ses.isEmpty) return Completion(CNormal, None, None) // Optimization from spec
+    val progCxt = ExecutionContext(globalEnv, globalEnv, globalPtr)
+    val result = evaluateSourceElements(p.ses)
+    result
   }
 
 }
