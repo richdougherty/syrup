@@ -1,15 +1,6 @@
 package com.richdougherty.jsai
 
-import org.mozilla.javascript.CompilerEnvirons
 import org.mozilla.javascript.Context
-import org.mozilla.javascript.DefaultErrorReporter
-import org.mozilla.javascript.Parser
-import org.mozilla.javascript.Scriptable
-import org.mozilla.javascript.IRFactory
-import org.mozilla.javascript.ErrorReporter
-import org.mozilla.javascript.EvaluatorException
-import org.mozilla.javascript.Interpreter
-import org.mozilla.javascript.InterpreterData
 
 /**
  * @author Rich Dougherty <http://www.richdougherty.com/>
@@ -17,6 +8,8 @@ import org.mozilla.javascript.InterpreterData
 object App {
   
   def main(args : Array[String]) {
+	val source = "'Hello '+'world.'"
+
     // See:
     //   Embedding JavaScript in Java with Rhino
     //   http://www.informit.com/guides/content.aspx?g=java&seqNum=562
@@ -24,7 +17,6 @@ object App {
     try {
       cx.setOptimizationLevel(-1);
 
-      val source = "'Hello '+'world.'"
       val sourceFileName = "HelloWorld"
       val sourceLineNo = 1
 
@@ -34,6 +26,12 @@ object App {
       println(result)
     } finally {
       Context.exit()
+    }
+    
+    {
+      val interp = new Interpreter
+      val result = interp.interpret(source)
+      println(result)
     }
   }
 
