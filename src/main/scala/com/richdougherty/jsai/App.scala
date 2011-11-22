@@ -8,7 +8,12 @@ import org.mozilla.javascript.Context
 object App {
   
   def main(args : Array[String]) {
-	val source = "'Hello '+'world.'"
+    val source = """
+      function hello() {
+        return 'Hello '+'world.'
+      }
+      hello();
+      """
 
     // See:
     //   Embedding JavaScript in Java with Rhino
