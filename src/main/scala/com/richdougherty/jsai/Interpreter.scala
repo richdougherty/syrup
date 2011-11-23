@@ -60,12 +60,16 @@ class Interpreter {
   }
 
   sealed trait Val
-  case object VUndef extends Val
-  case object VNull extends Val
-  case class VBool(d: Boolean) extends Val
-  case class VStr(d: String) extends Val
-  case class VNum(d: Double) extends Val
-  case class VObj(d: ObjPtr) extends Val
+
+  sealed trait LangVal extends Val
+  case object VUndef extends LangVal
+  case object VNull extends LangVal
+  case class VBool(d: Boolean) extends LangVal
+  case class VStr(d: String) extends LangVal
+  case class VNum(d: Double) extends LangVal
+  case class VObj(d: ObjPtr) extends LangVal
+
+  sealed trait SpecVal extends Val
   case class VRef(base: Val, refName: String, strictRef: Boolean) extends Val
   
   sealed trait Typ
@@ -76,50 +80,65 @@ class Interpreter {
   case object TyNum extends Typ
   case object TyObj extends Typ
   case object TyRef extends Typ
+  case object TyEnvRec extends Typ
 
   type ObjPtr = Int
-  case class ObjData(d: Map[PropName, Prop], ipm: InternalPropMap)
+  trait ObjData {
+    // Required methods
+    def prototype: Val
+    def clazz: Val
+    def extensible: Val
+    def get(propertyName: String): LangVal
+    def getOwnProperty(propertyName: String): Option[Prop]
+    def getProperty(propertyName: String): Option[Prop]
+    def put(propertyName: String, v: LangVal, strict: Boolean): Val
+    def canPut(propertyName: String): Boolean
+    def hasProperty(propertyName: String): Boolean
+    def delete(propertyName: String, failureHandling: Boolean): Boolean
+    def defaultValue(hint: String): Val // returns primitive vals only
+    def defineOwnProperty(propertyName: String, propDesc: Prop, failureHandling: Boolean): Boolean
+    // Optional methods
+    protected def ??? = error("Not implemented")
+    def primitiveVal: LangVal = ???
+    def construct(args: List[LangVal]): VObj = ???
+    def hasInstance(obj: Val): Boolean = ???
+    def scope: LexicalEnvironment = ???
+    def formalParameters: List[String] = ???
+    def code: FunctionCode = ???
+    def targetFunction: VObj = ???
+    def boundThis: VObj = ???
+    def boundArguments: List[LangVal] = ???
+    def `match`(s: String, index: Int): VObj = ???
+    def parameterMap: VObj = ???
+  }
+  trait CallableObj {
+    def call(thisObj: LangVal, args: List[LangVal]): Val
+  }
+  abstract class NativeObj(d: Map[PropName, Prop]) extends ObjData {
+  }
 
   type PropName = String
   sealed trait Prop
-  case class NamedDataProp(
+  case class DataProp(
     value: Val,
     writable: Val,
     enumerable: Val,
     configurable: Val) extends Prop
-  case class NamedAccessorProp(
+  case class AccessorProp(
     get: Val,
     set: Val,
     enumerable: Val,
     configurable: Val) extends Prop
 
-  trait InternalProp
-  case class IPPrototype(v: Val) extends InternalProp
-  case class IPClass(v: Val) extends InternalProp
-  case class IPExtensible(v: Val) extends InternalProp
-  case class IPCall(meth: (Val, Val) => Val) extends InternalProp
-
-  case class InternalPropMap(d: List[InternalProp]) {
-    def contains[P <: InternalProp]: Boolean = {
-      d.exists(_.isInstanceOf[P])
-    }
-    def get[P <: InternalProp]: Option[P] = {
-      d.find(_.isInstanceOf[P]).asInstanceOf[Option[P]]
-    }
-    def put[P <: InternalProp](ip: P): InternalPropMap = {
-      InternalPropMap(ip :: (d.filter(!_.isInstanceOf[P])))
-    }
-  }
-
-  case class Machine(cxt: ExecutionContext, heap: Heap, globalObjPtr: ObjPtr, globalEnv: LexicalEnvironment)
-  case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: ObjPtr)
+  case class Machine(cxt: ExecutionContext, heap: Heap, globalObj: VObj, globalEnv: LexicalEnvironment)
+  case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: VObj)
   case class Heap(mem: Map[ObjPtr, ObjData], nextPtr: ObjPtr)
 
   case class LexicalEnvironment(er: EnvironmentRecord, outer: Option[EnvironmentRecord])
 
-  sealed trait EnvironmentRecord
+  sealed trait EnvironmentRecord extends SpecVal
   case class DeclarativeEnvironmentRecord(bindings: Map[String, Binding]) extends EnvironmentRecord
-  case class ObjectEnvironmentRecord(bindingObj: ObjPtr, provideThis: Boolean = false) extends EnvironmentRecord
+  case class ObjectEnvironmentRecord(bindingObj: VObj, provideThis: Boolean = false) extends EnvironmentRecord
 
   sealed trait Binding
   case class MutableBinding(v: Option[Val], canDelete: Boolean) extends Binding
@@ -136,7 +155,7 @@ class Interpreter {
   sealed trait MachineOp
   case class MOAccess(thunk: Machine => MachineOp) extends MachineOp
   case class MOUpdate(thunk: Machine => (Machine, MachineOp)) extends MachineOp
-  case class MOComp(m: Machine, c: Completion) extends MachineOp
+  case class MOComp(thunk: Machine => Completion) extends MachineOp
   
   def runMachineOp(m: Machine, mo: MachineOp): (Machine, Completion) = mo match {
     case MOAccess(thunk) => {
@@ -147,7 +166,7 @@ class Interpreter {
       val (m1, mo1) = thunk(m)
       runMachineOp(m1, mo1)
     }
-    case MOComp(m, c) => (m, c)
+    case MOComp(thunk) => (m, thunk(m))
   }
   
   def moAccess[A](access: ((Machine, (A => MachineOp)) => MachineOp)): A @cps[MachineOp] = {
@@ -158,15 +177,27 @@ class Interpreter {
     shift((k: A => MachineOp) => MOUpdate((m: Machine) => update(m, k)))
   }
 
-  def newPtr = moUpdate[ObjPtr] {(m: Machine, k: ObjPtr => MachineOp) =>
+  def moThrow(errorType: String): Nothing @cps[MachineOp] = shift((k: Nothing => MachineOp) => {
+    MOComp((_: Machine) => Completion(CThrow, Some(VStr(errorType)), None)) // FIXME: Look up actual value.
+  })
+
+  // Pass a value; used to work around continuations plugin bugs.
+  def moVal[A](a: A) = moAccess[A] { (m: Machine, k: A => MachineOp) =>
+    k(a) // FIXME: Handle missing object.
+  }
+
+  // Does nothing; used to work around continuations plugin bugs.
+  def moNop = moVal(())
+
+  def newObj = moUpdate[VObj] {(m: Machine, k: VObj => MachineOp) =>
     val h = m.heap
     val ptr = h.nextPtr
     val m1 = m.copy(heap = h.copy(nextPtr = ptr+1))
-    (m1, k(ptr))
+    (m1, k(VObj(ptr)))
   }
 
-  def load(ptr: ObjPtr) = moAccess[ObjData] {(m: Machine, k: ObjData => MachineOp) =>
-    k(m.heap.mem(ptr)) // FIXME: Handle missing object.
+  def load(obj: VObj) = moAccess[ObjData] {(m: Machine, k: ObjData => MachineOp) =>
+    k(m.heap.mem(obj.d)) // FIXME: Handle missing object.
   }
 
   def store(ptr: ObjPtr, data: ObjData) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
@@ -196,16 +227,96 @@ class Interpreter {
   def typ(v: Val) = v match {
     case VUndef => TyUndef
     case VNull => TyNull
-    case VBool(_) => TyBool
-    case VStr(_) => TyStr
-    case VNum(_) => TyNum
-    case VObj(_) => TyObj
-    case VRef(_, _, _) => TyRef
+    case _: VBool => TyBool
+    case _: VStr => TyStr
+    case _: VNum => TyNum
+    case _: VObj => TyObj
+    case _: VRef => TyRef
+    case _: EnvironmentRecord => TyEnvRec
   }
-  
+
+  // GetBase(V) in spec
+  def getBase(v: VRef): Val = v.base
+
+  // IsUnresolvableReference(V) in spec
+  def isUnresolvableReference(v: VRef): Boolean = (v.base == VUndef)
+
+  // GetReferencedName(V) in spec
+  def getReferencedName(v: VRef): String = v.refName
+
+  // IsStrictReference(V) in spec
+  def isStrictReference(v: VRef): Boolean = v.strictRef
+
+  // IsPropertyReference(V) in spec
+  def isPropertyReference(v: VRef): Boolean = v.base match {
+    case _: VObj => true
+    case _ => hasPrimitiveBase(v)
+  }
+
+  // HasPrimitiveBase(V) in spec
+  def hasPrimitiveBase(v: VRef): Boolean = v.base match {
+    case _: VBool => true
+    case _: VStr => true
+    case _: VNum => true
+    case _ => false
+  }
+
   // GetValue(V) in spec
-  def getValue(v: Val): Val = {
-    v // FIXME: Stub
+  def getValue(v: Val): Val @cps[MachineOp] = v match {
+    case v: VRef => {
+      val base = getBase(v)
+      if (isUnresolvableReference(v)) moThrow("ReferenceError") else moNop
+      if (isPropertyReference(v)) {
+        if (!hasPrimitiveBase(v)) {
+          val baseData = load(base.asInstanceOf[VObj])
+          baseData.get(getReferencedName(v))
+        } else {
+          val o = toObject(base)
+          val odata = load(o)
+          odata.getProperty(getReferencedName(v)) match {
+            case None => VUndef
+            case Some(desc: DataProp) => desc.value
+            case Some(desc: AccessorProp) => {
+              val getter = desc.get
+              if (getter == VUndef) {
+                moVal(VUndef)
+              } else {
+                val getterData = load(base.asInstanceOf[VObj])
+                getterData.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], Nil)
+              }
+            }
+          }
+        }
+      } else {
+        // base must be an environment record
+        val baseEnvRec = base.asInstanceOf[EnvironmentRecord]
+        getBindingValue(baseEnvRec, getReferencedName(v), isStrictReference(v))
+      }
+    }
+    case _ => v
+  }
+
+  // envRec.GetBindingValue(N, S) in spec
+  def getBindingValue(envRec: EnvironmentRecord, name: String, strict: Boolean): Val @cps[MachineOp] = envRec match {
+    case envRec: DeclarativeEnvironmentRecord => {
+      assert(envRec.bindings.contains(name))
+      envRec.bindings(name) match {
+        case MutableBinding(None, _) => VUndef // FIXME: Spec doesn't cover this situation. Spec error?
+        case MutableBinding(Some(v), _) => v
+        case ImmutableBinding(None) => if (strict) moThrow("ReferenceError") else VUndef
+        case ImmutableBinding(Some(v)) => v
+      }
+    }
+    case envRec: ObjectEnvironmentRecord => {
+      val bindings = envRec.bindingObj
+      val bindingsData = load(bindings)
+      val value = bindingsData.hasProperty(name)
+      if (!value) {
+        if (!strict) VUndef
+        moThrow("ReferenceError")
+      } else moNop
+      bindingsData.get(name)
+    }
   }
 
   // ToPrimitive(V) in spec
@@ -222,11 +333,21 @@ class Interpreter {
   def toNumber(v: Val): VNum = {
     v.asInstanceOf[VNum] // FIXME: Stub
   }
-  
+
+  def toObject(v: Val): VObj @cps[MachineOp] = v match {
+    case VUndef => moThrow("TypeError")
+    case VNull => moThrow("TypeError")
+    case b: VBool => error("FIXME: Implement boolean boxing")
+    case n: VNum => error("FIXME: Implement number boxing")
+    case s: VStr => error("FIXME: Implement string boxing")
+    case o: VObj => o
+    case _ => error("Unsupported object conversion: " + v)
+  }
+
   def isCallable(v: Val): Boolean @cps[MachineOp] = v match {
-    case VObj(objPtr) => {
-      val objData = load(objPtr)
-      objData.ipm.contains[IPCall]
+    case o: VObj => {
+      val objData = load(o)
+      objData.isInstanceOf[CallableObj]
     }
     case _ => false
   }
@@ -347,16 +468,21 @@ class Interpreter {
 
   def interpret(programSource: String): Completion = {
     val p = Parser.parse(programSource)
-    val globalPtr = 1 // Stubbed ObjPtr to global object
-    val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalPtr), None)
+
     val strictMode = hasUseStrictDirective(p.ses)
     if (p.ses.isEmpty) return Completion(CNormal, None, None) // Optimization from spec
-    val progCxt = ExecutionContext(globalEnv, globalEnv, globalPtr)
-    val m = Machine(progCxt, Heap(Map.empty, 0), globalPtr, globalEnv)
-    runMachineOp(m, reset {
-      val result = evaluateSourceElements(p.ses)
-      MOComp(m, result)
-    })._2
+
+    val globalObj = VObj(1)
+    val heap = Heap(Map.empty, 2) // FIXME: Store global object data
+    val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalObj), None)
+    val progCxt = ExecutionContext(globalEnv, globalEnv, globalObj)
+    val m = Machine(progCxt, Heap(Map.empty, 0), globalObj, globalEnv)
+
+    val (m1, c) = runMachineOp(m, reset {
+      val evalCompletion = evaluateSourceElements(p.ses)
+      MOComp((_: Machine) => evalCompletion)
+    })
+    c
   }
 
 }
