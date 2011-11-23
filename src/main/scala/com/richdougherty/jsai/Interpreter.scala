@@ -61,6 +61,28 @@ class Interpreter {
     }
   }
 
+  final case class Cell[A](id: Int)
+  final class Heap(cells: Map[Int,Any], nextId: Int) {
+    def this() = this(Map.empty, 1)
+    def alloc[A]: (Heap, Cell[A]) =
+      (new Heap(cells, nextId + 1), Cell[A](nextId))
+    def free[A](cell: Cell[A]): Heap = {
+      if (!cells.contains(cell.id))
+        throw new NoSuchElementException("Cannot free non-existent cell: " + cell)
+      new Heap(cells - cell.id, nextId)
+    }
+    def load[A](cell: Cell[A]): A =
+      loadOption[A](cell) match {
+        case None =>
+          throw new NoSuchElementException("Cannot load non-existent cell: " + cell)
+        case Some(a) => a
+      }
+    def loadOption[A](cell: Cell[A]): Option[A] =
+      cells.get(cell.id).asInstanceOf[Option[A]]
+    def store[A](cell: Cell[A], a: A): Heap =
+      new Heap(cells.updated(cell.id, a), nextId)
+  }
+
   sealed trait Val
 
   sealed trait LangVal extends Val
@@ -69,7 +91,7 @@ class Interpreter {
   case class VBool(d: Boolean) extends LangVal
   case class VStr(d: String) extends LangVal
   case class VNum(d: Double) extends LangVal
-  case class VObj(d: ObjPtr) extends LangVal
+  case class VObj(cell: Cell[ObjData]) extends LangVal
 
   sealed trait SpecVal extends Val
   case class VRef(base: Val, refName: String, strictRef: Boolean) extends Val
@@ -132,7 +154,7 @@ class Interpreter {
           protoOption match {
             case None => None
             case Some(proto) => {
-              val protoData = load(proto)
+              val protoData = ^(proto.cell)
               protoData.getProperty(propertyName)
             }
           }
@@ -165,7 +187,6 @@ class Interpreter {
 
   case class Machine(cxt: ExecutionContext, heap: Heap, globalObj: VObj, globalEnv: LexicalEnvironment)
   case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: VObj, code: Code)
-  case class Heap(mem: Map[ObjPtr, ObjData], nextPtr: ObjPtr)
 
   case class LexicalEnvironment(er: EnvironmentRecord, outer: Option[LexicalEnvironment])
 
@@ -179,7 +200,7 @@ class Interpreter {
   }
   case class ObjectEnvironmentRecord(bindingObj: VObj, provideThis: Boolean = false) extends EnvironmentRecord {
     def hasBinding(name: String): Boolean @cps[MachineOp] = {
-      val bindingObjData = load(bindingObj)
+      val bindingObjData = ^(bindingObj.cell)
       bindingObjData.hasProperty(name)
     }
     def implicitThisValue: Val = {
@@ -242,19 +263,22 @@ class Interpreter {
   // Does nothing; used to work around continuations plugin bugs.
   def moNop = moVal(())
 
-  def newObj = moUpdate[VObj] {(m: Machine, k: VObj => MachineOp) =>
-    val h = m.heap
-    val ptr = h.nextPtr
-    val m1 = m.copy(heap = h.copy(nextPtr = ptr+1))
-    (m1, k(VObj(ptr)))
+  def alloc[A] = moUpdate[Cell[A]] {(m: Machine, k: Cell[A] => MachineOp) =>
+    val (h, cell) = m.heap.alloc[A]
+    (m.copy(heap = h), k(cell))
   }
 
-  def load(obj: VObj) = moAccess[ObjData] {(m: Machine, k: ObjData => MachineOp) =>
-    k(m.heap.mem(obj.d)) // FIXME: Handle missing object.
+  def newObj = {
+    val cell = alloc[ObjData]
+    VObj(cell)
   }
 
-  def store(ptr: ObjPtr, data: ObjData) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
-    (m.copy(heap = m.heap.copy(mem = m.heap.mem.updated(ptr, data))), k(()))
+  def ^[A](cell: Cell[A]) = moAccess[A] {(m: Machine, k: A => MachineOp) =>
+    k(m.heap.load(cell)) // FIXME: Handle missing object.
+  }
+
+  def store[A](cell: Cell[A], a: A) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
+    (m.copy(heap = m.heap.store(cell, a)), k(()))
   }
 
   def currentCxt = moAccess[ExecutionContext] {(m: Machine, k: ExecutionContext => MachineOp) =>
@@ -325,11 +349,11 @@ class Interpreter {
       if (isUnresolvableReference(v)) moThrow("ReferenceError") else moNop
       if (isPropertyReference(v)) {
         if (!hasPrimitiveBase(v)) {
-          val baseData = load(base.asInstanceOf[VObj])
+          val baseData = ^(base.asInstanceOf[VObj].cell)
           baseData.get(getReferencedName(v))
         } else {
           val o = toObject(base)
-          val odata = load(o)
+          val odata = ^(o.cell)
           val descOption = odata.getProperty(getReferencedName(v))
           descOption match {
             case None => VUndef
@@ -339,7 +363,7 @@ class Interpreter {
               if (getter == VUndef) {
                 moVal(VUndef)
               } else {
-                val getterData = load(base.asInstanceOf[VObj])
+                val getterData = ^(base.asInstanceOf[VObj].cell)
                 getterData.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], Nil)
               }
             }
@@ -367,7 +391,7 @@ class Interpreter {
     }
     case envRec: ObjectEnvironmentRecord => {
       val bindings = envRec.bindingObj
-      val bindingsData = load(bindings)
+      val bindingsData = ^(bindings.cell)
       val value = bindingsData.hasProperty(name)
       if (!value) {
         if (!strict) VUndef
@@ -404,7 +428,7 @@ class Interpreter {
 
   def isCallable(v: Val): Boolean @cps[MachineOp] = v match {
     case o: VObj => {
-      val objData = load(o)
+      val objData = ^(o.cell)
       objData.isInstanceOf[CallableObj]
     }
     case _ => false
@@ -466,7 +490,7 @@ class Interpreter {
         VUndef
 //        Let thisValue be undefined.
       }
-      val funcData = load(func.asInstanceOf[VObj])
+      val funcData = ^(func.asInstanceOf[VObj].cell)
       funcData.asInstanceOf[CallableObj].call(thisValue, argList)
 //    Return the result of calling the [[Call]] internal method on func, providing thisValue as the this value and providing the list argList as the argument values.
 //The production CallExpression : CallExpression Arguments is evaluated in exactly the same manner, except that the contained CallExpression is evaluated in step 1.
@@ -576,11 +600,13 @@ class Interpreter {
     if (p.ses.isEmpty) return Completion(CNormal, None, None) // Optimization from spec
 
     val globalCode = GlobalCode(p.ses)
-    val globalObj = VObj(1)
-    val heap = Heap(Map.empty.updated(1, NativeObj()), 2) // FIXME: Store global object data
+    val h1 = new Heap()
+    val (h2, globalObjCell) = h1.alloc[ObjData]
+    val h3 = h2.store(globalObjCell, new NativeObj())
+    val globalObj = VObj(globalObjCell)
     val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalObj), None)
     val progCxt = ExecutionContext(globalEnv, globalEnv, globalObj, globalCode)
-    val m = Machine(progCxt, heap, globalObj, globalEnv)
+    val m = Machine(progCxt, h3, globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
       instantiateDeclarationBindings(Nil)
