@@ -176,14 +176,14 @@ class Interpreter {
   sealed trait Prop
   case class DataProp(
     value: Val,
-    writable: Val,
-    enumerable: Val,
-    configurable: Val) extends Prop
+    writable: Boolean,
+    enumerable: Boolean,
+    configurable: Boolean) extends Prop
   case class AccessorProp(
     get: Val,
     set: Val,
-    enumerable: Val,
-    configurable: Val) extends Prop
+    enumerable: Boolean,
+    configurable: Boolean) extends Prop
 
   case class Machine(cxt: ExecutionContext, heap: Heap, globalObj: VObj, globalEnv: LexicalEnvironment)
   case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: VObj, code: Code)
@@ -192,10 +192,24 @@ class Interpreter {
 
   sealed trait EnvironmentRecord extends SpecVal {
     def hasBinding(name: String): Boolean @cps[MachineOp]
+    def createMutableBinding(name: String, canDelete: Boolean): Unit @cps[MachineOp]
+    def setMutableBinding(name: String, v: Val, strict: Boolean): Unit @cps[MachineOp]
     def implicitThisValue: Val
   }
-  case class DeclarativeEnvironmentRecord(bindings: Map[String, Binding]) extends EnvironmentRecord {
-    def hasBinding(name: String): Boolean @cps[MachineOp] = bindings.contains(name)
+  case class DeclarativeEnvironmentRecord(bindings: Cell[Map[String, Binding]]) extends EnvironmentRecord {
+    def hasBinding(name: String) = ^(bindings).contains(name)
+    def createMutableBinding(name: String, canDelete: Boolean) = {
+      assert(!hasBinding(name))
+      bindings @= @*(bindings).updated(name, MutableBinding(@<(VUndef), canDelete))
+    }
+    def setMutableBinding(name: String, v: Val, strict: Boolean) = {
+      val binding = @*(bindings).get(name)
+      binding match {
+        case None => assert(false)
+        case Some(mb: MutableBinding) => { mb.v @= v }
+        case Some(_: ImmutableBinding) => moThrow("ReferenceError")
+      }
+    }
     def implicitThisValue: Val = VUndef
   }
   case class ObjectEnvironmentRecord(bindingObj: VObj, provideThis: Boolean = false) extends EnvironmentRecord {
@@ -203,14 +217,26 @@ class Interpreter {
       val bindingObjData = ^(bindingObj.cell)
       bindingObjData.hasProperty(name)
     }
+    def createMutableBinding(name: String, canDelete: Boolean) = {
+      val bindings = @*(bindingObj.cell)
+      assert(!bindings.hasProperty(name))
+      val configValue = canDelete
+      bindings.defineOwnProperty(name, DataProp(VUndef, true, true, configValue), true)
+      ()
+    }
+    def setMutableBinding(name: String, v: Val, strict: Boolean) = {
+      val bindings = @*(bindingObj.cell)
+      bindings.put(name, v, strict)
+      ()
+    }
     def implicitThisValue: Val = {
       if (provideThis) bindingObj else VUndef
     }
   }
 
   sealed trait Binding
-  case class MutableBinding(v: Option[Val], canDelete: Boolean) extends Binding
-  case class ImmutableBinding(v: Option[Val]) extends Binding
+  case class MutableBinding(v: Cell[Val], canDelete: Boolean) extends Binding
+  case class ImmutableBinding(v: Val) extends Binding
 
   case class Completion(typ: CompletionType, v: Option[Val], target: Option[String])
   sealed trait CompletionType
@@ -273,12 +299,27 @@ class Interpreter {
     VObj(cell)
   }
 
-  def ^[A](cell: Cell[A]) = moAccess[A] {(m: Machine, k: A => MachineOp) =>
+  def @<[A](a: A) = {
+    val cell = alloc[A]
+    cell
+  }
+
+  def @*[A](cell: Cell[A]) = moAccess[A] {(m: Machine, k: A => MachineOp) =>
     k(m.heap.load(cell)) // FIXME: Handle missing object.
   }
 
+  def ^[A](cell: Cell[A]) = @*(cell) // FIXME: Remove this method
+
   def store[A](cell: Cell[A], a: A) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
     (m.copy(heap = m.heap.store(cell, a)), k(()))
+  }
+
+  trait CellSyntax[A] {
+    def @=(a: A): Unit @cps[MachineOp]
+  }
+
+  implicit def cellSyntax[A](cell: Cell[A]): CellSyntax[A] = new CellSyntax[A] {
+    def @=(a: A) = store[A](cell, a)
   }
 
   def currentCxt = moAccess[ExecutionContext] {(m: Machine, k: ExecutionContext => MachineOp) =>
@@ -381,12 +422,22 @@ class Interpreter {
   // envRec.GetBindingValue(N, S) in spec
   def getBindingValue(envRec: EnvironmentRecord, name: String, strict: Boolean): Val @cps[MachineOp] = envRec match {
     case envRec: DeclarativeEnvironmentRecord => {
-      assert(envRec.bindings.contains(name))
-      envRec.bindings(name) match {
-        case MutableBinding(None, _) => VUndef // FIXME: Spec doesn't cover this situation. Spec error?
-        case MutableBinding(Some(v), _) => v
-        case ImmutableBinding(None) => if (strict) moThrow("ReferenceError") else VUndef
-        case ImmutableBinding(Some(v)) => v
+      val bindings = @*(envRec.bindings)
+      assert(bindings.contains(name))
+      bindings(name) match {
+        case mb: MutableBinding => {
+          val v = @*(mb.v)
+          v match {
+            case VUndef => VUndef // FIXME: Spec doesn't cover this situation. Spec error?
+            case v => v
+          }
+        }
+        case ib: ImmutableBinding => {
+          ib.v match {
+            case VUndef => if (strict) moThrow("ReferenceError") else moVal(VUndef)
+            case v => moVal(v)
+          }
+        }
       }
     }
     case envRec: ObjectEnvironmentRecord => {
@@ -583,13 +634,14 @@ class Interpreter {
       }
       case _ => ()
     }
-//    cpsIterable(cxt.code.ses).cps.foldLeft(env) {
-//      case (env0, FunctionDeclarationSourceElement(fd@FunctionDeclaration(fn, _, _))) => {
-//        val fo = null // FIXME: Instantiate function
-//        val funcAlreadyDeclared = env0.hasBinding(fn)
-//        if (!funcAlreadyDeclared) { env0. }
-//      }
-//    }
+    cpsIterable(cxt.code.ses).cps.foreach {
+      case FunctionDeclarationSourceElement(fd@FunctionDeclaration(fn, _, _)) => {
+        val fo = null // FIXME: Instantiate function
+        val funcAlreadyDeclared = env.hasBinding(fn)
+        if (!funcAlreadyDeclared) { env.createMutableBinding(fn, configurableBindings) } else moNop
+      }
+      case _ => ()
+    }
     ()
   }
 
