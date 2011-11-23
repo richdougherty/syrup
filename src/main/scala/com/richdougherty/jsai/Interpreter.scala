@@ -15,6 +15,7 @@ import Parser.ReturnStatement
 import Parser.SourceElement
 import Parser.StatementSourceElement
 import Parser.StringLiteral
+import com.richdougherty.jsai.Parser.FunctionDeclaration
 
 class Interpreter {
   
@@ -227,8 +228,11 @@ class Interpreter {
     MOComp((_: Machine) => c) // FIXME: Look up actual value.
   })
 
-  def moThrow(errorType: String) =
-    moComplete(Completion(CThrow, Some(VStr(errorType)), None)) // FIXME: Look up actual value.
+  def moThrow(errorType: String): Nothing @cps[MachineOp] = {
+    // FIXME: Create a proper error object
+    val error = VStr(errorType + ": " + (new RuntimeException(errorType)).getStackTraceString)
+    moComplete(Completion(CThrow, Some(error), None))
+  }
 
   // Pass a value; used to work around continuations plugin bugs.
   def moVal[A](a: A) = moAccess[A] { (m: Machine, k: A => MachineOp) =>
@@ -503,7 +507,9 @@ class Interpreter {
     }
   }
   
-  sealed trait Code
+  sealed trait Code {
+    def ses: List[SourceElement]
+  }
   case class GlobalCode(ses: List[SourceElement]) extends Code
   case class EvalCode(ses: List[SourceElement], directStrictCall: Boolean) extends Code
   case class FunctionCode(func: ObjPtr, ses: List[SourceElement], declaredInStrict: Boolean) extends Code
@@ -531,15 +537,17 @@ class Interpreter {
     }
   }
 
-  def instantiateDeclarationBinding(m: Machine, code: Code, args: List[Val]): Machine = {
-    val env = m.cxt.varEnv
-    val configurableBindings = code match {
+  def instantiateDeclarationBindings(args: List[Val]): Unit @cps[MachineOp] = {
+    var cxt = currentCxt
+    val env = cxt.varEnv.er
+    val configurableBindings = cxt.code match {
       case _: EvalCode => true
       case _ => false
     }
-    val strict = isStrictModeCode(code)
-//    code match {
-//      case FunctionCode(func, _, _) => {
+    val strict = isStrictModeCode(cxt.code)
+    cxt.code match {
+      case FunctionCode(func, _, _) => {
+        error("Not implemented")
 //        val names = Nil.asInstanceOf[List[String]] //getInternalProperty(func, "[[FormalParameters]]")
 //        val argCount = args.length
 //        for ((argName, n) <- names.zipWithIndex) {
@@ -548,10 +556,17 @@ class Interpreter {
 //          if (!argAlreadyDeclared) createMutableBinding(env, argName)
 //          setMutableBinding(env, v, strict)
 //        }
+      }
+      case _ => ()
+    }
+//    cpsIterable(cxt.code.ses).cps.foldLeft(env) {
+//      case (env0, FunctionDeclarationSourceElement(fd@FunctionDeclaration(fn, _, _))) => {
+//        val fo = null // FIXME: Instantiate function
+//        val funcAlreadyDeclared = env0.hasBinding(fn)
+//        if (!funcAlreadyDeclared) { env0. }
 //      }
-//      case _ => ()
 //    }
-    m // FIXME: Stub
+    ()
   }
 
   def interpret(programSource: String): Completion = {
@@ -560,13 +575,15 @@ class Interpreter {
     val strictMode = hasUseStrictDirective(p.ses)
     if (p.ses.isEmpty) return Completion(CNormal, None, None) // Optimization from spec
 
+    val globalCode = GlobalCode(p.ses)
     val globalObj = VObj(1)
     val heap = Heap(Map.empty.updated(1, NativeObj()), 2) // FIXME: Store global object data
     val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalObj), None)
-    val progCxt = ExecutionContext(globalEnv, globalEnv, globalObj, GlobalCode(p.ses))
+    val progCxt = ExecutionContext(globalEnv, globalEnv, globalObj, globalCode)
     val m = Machine(progCxt, heap, globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
+      instantiateDeclarationBindings(Nil)
       val evalCompletion = evaluateSourceElements(p.ses)
       MOComp((_: Machine) => evalCompletion)
     })
