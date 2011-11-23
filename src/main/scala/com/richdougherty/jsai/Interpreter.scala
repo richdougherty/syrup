@@ -90,7 +90,7 @@ class Interpreter {
     def clazz: Val
     def extensible: Val
     def get(propertyName: String): LangVal
-    def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp]
+    def getOwnProperty(propertyName: String): Option[Prop]
     def getProperty(propertyName: String): Option[Prop] @cps[MachineOp]
     def put(propertyName: String, v: Val, strict: Boolean): Val
     def canPut(propertyName: String): Boolean
@@ -115,19 +115,28 @@ class Interpreter {
   trait CallableObj {
     def call(thisObj: Val, args: List[Val]): Val
   }
-  case class NativeObj(d: Map[PropName, Prop] = Map.empty) extends ObjData {
-    def prototype: Option[VObj] = ???
+  case class NativeObj(d: Map[PropName, Prop] = Map.empty, prototype: Option[VObj] = None) extends ObjData {
     def clazz: Val = ???
     def extensible: Val = ???
     def get(propertyName: String): LangVal = ???
-    def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp] = ???
+    def getOwnProperty(propertyName: String): Option[Prop] = {
+      d.get(propertyName) // Spec returns a copy of the (mutable) property descriptor
+    }
     def getProperty(propertyName: String): Option[Prop] @cps[MachineOp] = {
-      val prop = getOwnProperty(propertyName)
-      if (prop.isDefined) prop.get
-      val proto = prototype
-      if (proto == None) VUndef
-      val protoData = load(proto.get)
-      protoData.getProperty(propertyName)
+      val propOption = getOwnProperty(propertyName)
+      propOption match {
+        case Some(_) => propOption
+        case None => {
+          val protoOption = prototype
+          protoOption match {
+            case None => None
+            case Some(proto) => {
+              val protoData = load(proto)
+              protoData.getProperty(propertyName)
+            }
+          }
+        }
+      }
     }
     def put(propertyName: String, v: Val, strict: Boolean): Val = ???
     def canPut(propertyName: String): Boolean = ???
@@ -504,16 +513,18 @@ class Interpreter {
 
   // GetIdentifierReference(lex, name, strict) in spec
   def getIdentifierReference(lex: Option[LexicalEnvironment], name: String, strict: Boolean): VRef @cps[MachineOp] = {
-    if (lex == None) {
-      VRef(VUndef, name, strict)
-    }
-    val envRec = lex.get.er
-    val exists = envRec.hasBinding(name)
-    if (exists) {
-      moVal(VRef(envRec, name, strict))
-    } else {
-      val outer = lex.get.outer
-      getIdentifierReference(outer, name, strict)
+    lex match {
+      case None => VRef(VUndef, name, strict)
+      case Some(lex) => {
+        val envRec = lex.er
+        val exists = envRec.hasBinding(name)
+        if (exists) {
+          moVal(VRef(envRec, name, strict))
+        } else {
+          val outer = lex.outer
+          getIdentifierReference(outer, name, strict)
+        }
+      }
     }
   }
 
