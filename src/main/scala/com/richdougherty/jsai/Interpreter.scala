@@ -86,15 +86,15 @@ class Interpreter {
   type ObjPtr = Int
   trait ObjData {
     // Required methods
-    def prototype: Val
+    def prototype: Option[VObj]
     def clazz: Val
     def extensible: Val
     def get(propertyName: String): LangVal
-    def getOwnProperty(propertyName: String): Option[Prop]
-    def getProperty(propertyName: String): Option[Prop]
+    def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp]
+    def getProperty(propertyName: String): Option[Prop] @cps[MachineOp]
     def put(propertyName: String, v: Val, strict: Boolean): Val
     def canPut(propertyName: String): Boolean
-    def hasProperty(propertyName: String): Boolean
+    def hasProperty(propertyName: String): Boolean @cps[MachineOp]
     def delete(propertyName: String, failureHandling: Boolean): Boolean
     def defaultValue(hint: String): Val // returns primitive vals only
     def defineOwnProperty(propertyName: String, propDesc: Prop, failureHandling: Boolean): Boolean
@@ -116,15 +116,25 @@ class Interpreter {
     def call(thisObj: Val, args: List[Val]): Val
   }
   case class NativeObj(d: Map[PropName, Prop] = Map.empty) extends ObjData {
-    def prototype: Val = ???
+    def prototype: Option[VObj] = ???
     def clazz: Val = ???
     def extensible: Val = ???
     def get(propertyName: String): LangVal = ???
-    def getOwnProperty(propertyName: String): Option[Prop] = ???
-    def getProperty(propertyName: String): Option[Prop] = ???
+    def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp] = ???
+    def getProperty(propertyName: String): Option[Prop] @cps[MachineOp] = {
+      val prop = getOwnProperty(propertyName)
+      if (prop.isDefined) prop.get
+      val proto = prototype
+      if (proto == None) VUndef
+      val protoData = load(proto.get)
+      protoData.getProperty(propertyName)
+    }
     def put(propertyName: String, v: Val, strict: Boolean): Val = ???
     def canPut(propertyName: String): Boolean = ???
-    def hasProperty(propertyName: String): Boolean = ???
+    def hasProperty(propertyName: String): Boolean @cps[MachineOp] = {
+      val desc = getProperty(propertyName)
+      desc.isDefined
+    }
     def delete(propertyName: String, failureHandling: Boolean): Boolean = ???
     def defaultValue(hint: String): Val = ???
     def defineOwnProperty(propertyName: String, propDesc: Prop, failureHandling: Boolean): Boolean = ???
@@ -304,7 +314,8 @@ class Interpreter {
         } else {
           val o = toObject(base)
           val odata = load(o)
-          odata.getProperty(getReferencedName(v)) match {
+          val descOption = odata.getProperty(getReferencedName(v))
+          descOption match {
             case None => VUndef
             case Some(desc: DataProp) => desc.value
             case Some(desc: AccessorProp) => {
