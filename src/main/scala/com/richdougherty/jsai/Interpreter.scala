@@ -115,7 +115,19 @@ class Interpreter {
   trait CallableObj {
     def call(thisObj: Val, args: List[Val]): Val
   }
-  abstract class NativeObj(d: Map[PropName, Prop]) extends ObjData {
+  case class NativeObj(d: Map[PropName, Prop] = Map.empty) extends ObjData {
+    def prototype: Val = ???
+    def clazz: Val = ???
+    def extensible: Val = ???
+    def get(propertyName: String): LangVal = ???
+    def getOwnProperty(propertyName: String): Option[Prop] = ???
+    def getProperty(propertyName: String): Option[Prop] = ???
+    def put(propertyName: String, v: Val, strict: Boolean): Val = ???
+    def canPut(propertyName: String): Boolean = ???
+    def hasProperty(propertyName: String): Boolean = ???
+    def delete(propertyName: String, failureHandling: Boolean): Boolean = ???
+    def defaultValue(hint: String): Val = ???
+    def defineOwnProperty(propertyName: String, propDesc: Prop, failureHandling: Boolean): Boolean = ???
   }
 
   type PropName = String
@@ -524,10 +536,10 @@ class Interpreter {
     if (p.ses.isEmpty) return Completion(CNormal, None, None) // Optimization from spec
 
     val globalObj = VObj(1)
-    val heap = Heap(Map.empty, 2) // FIXME: Store global object data
+    val heap = Heap(Map.empty.updated(1, NativeObj()), 2) // FIXME: Store global object data
     val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalObj), None)
     val progCxt = ExecutionContext(globalEnv, globalEnv, globalObj, GlobalCode(p.ses))
-    val m = Machine(progCxt, Heap(Map.empty, 0), globalObj, globalEnv)
+    val m = Machine(progCxt, heap, globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
       val evalCompletion = evaluateSourceElements(p.ses)
