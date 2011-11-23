@@ -122,10 +122,18 @@
             </goals>
             <configuration>
               <args>
+                <arg>-P:continuations:enable</arg>
                 <arg>-make:transitive</arg>
                 <arg>-dependencyfile</arg>
                 <arg>${project.build.directory}/.scala_dependencies</arg>
               </args>
+              <compilerPlugins>
+                <compilerPlugin>
+                  <groupId>org.scala-lang.plugins</groupId>
+                  <artifactId>continuations</artifactId>
+                  <version>${scala.version}</version>
+                </compilerPlugin>
+              </compilerPlugins>
             </configuration>
           </execution>
         </executions>
