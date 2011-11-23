@@ -8,6 +8,7 @@ import Parser.AdditionOperator
 import Parser.CallExpression
 import Parser.Expression
 import Parser.ExpressionStatement
+import Parser.Identifier
 import Parser.FunctionDeclarationSourceElement
 import Parser.InfixExpression
 import Parser.ReturnStatement
@@ -91,7 +92,7 @@ class Interpreter {
     def get(propertyName: String): LangVal
     def getOwnProperty(propertyName: String): Option[Prop]
     def getProperty(propertyName: String): Option[Prop]
-    def put(propertyName: String, v: LangVal, strict: Boolean): Val
+    def put(propertyName: String, v: Val, strict: Boolean): Val
     def canPut(propertyName: String): Boolean
     def hasProperty(propertyName: String): Boolean
     def delete(propertyName: String, failureHandling: Boolean): Boolean
@@ -100,19 +101,19 @@ class Interpreter {
     // Optional methods
     protected def ??? = error("Not implemented")
     def primitiveVal: LangVal = ???
-    def construct(args: List[LangVal]): VObj = ???
+    def construct(args: List[Val]): VObj = ???
     def hasInstance(obj: Val): Boolean = ???
     def scope: LexicalEnvironment = ???
     def formalParameters: List[String] = ???
     def code: FunctionCode = ???
     def targetFunction: VObj = ???
     def boundThis: VObj = ???
-    def boundArguments: List[LangVal] = ???
+    def boundArguments: List[Val] = ???
     def `match`(s: String, index: Int): VObj = ???
     def parameterMap: VObj = ???
   }
   trait CallableObj {
-    def call(thisObj: LangVal, args: List[LangVal]): Val
+    def call(thisObj: Val, args: List[Val]): Val
   }
   abstract class NativeObj(d: Map[PropName, Prop]) extends ObjData {
   }
@@ -131,14 +132,28 @@ class Interpreter {
     configurable: Val) extends Prop
 
   case class Machine(cxt: ExecutionContext, heap: Heap, globalObj: VObj, globalEnv: LexicalEnvironment)
-  case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: VObj)
+  case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: VObj, code: Code)
   case class Heap(mem: Map[ObjPtr, ObjData], nextPtr: ObjPtr)
 
-  case class LexicalEnvironment(er: EnvironmentRecord, outer: Option[EnvironmentRecord])
+  case class LexicalEnvironment(er: EnvironmentRecord, outer: Option[LexicalEnvironment])
 
-  sealed trait EnvironmentRecord extends SpecVal
-  case class DeclarativeEnvironmentRecord(bindings: Map[String, Binding]) extends EnvironmentRecord
-  case class ObjectEnvironmentRecord(bindingObj: VObj, provideThis: Boolean = false) extends EnvironmentRecord
+  sealed trait EnvironmentRecord extends SpecVal {
+    def hasBinding(name: String): Boolean @cps[MachineOp]
+    def implicitThisValue: Val
+  }
+  case class DeclarativeEnvironmentRecord(bindings: Map[String, Binding]) extends EnvironmentRecord {
+    def hasBinding(name: String): Boolean @cps[MachineOp] = bindings.contains(name)
+    def implicitThisValue: Val = VUndef
+  }
+  case class ObjectEnvironmentRecord(bindingObj: VObj, provideThis: Boolean = false) extends EnvironmentRecord {
+    def hasBinding(name: String): Boolean @cps[MachineOp] = {
+      val bindingObjData = load(bindingObj)
+      bindingObjData.hasProperty(name)
+    }
+    def implicitThisValue: Val = {
+      if (provideThis) bindingObj else VUndef
+    }
+  }
 
   sealed trait Binding
   case class MutableBinding(v: Option[Val], canDelete: Boolean) extends Binding
@@ -202,6 +217,10 @@ class Interpreter {
 
   def store(ptr: ObjPtr, data: ObjData) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
     (m.copy(heap = m.heap.copy(mem = m.heap.mem.updated(ptr, data))), k(()))
+  }
+
+  def currentCxt = moAccess[ExecutionContext] {(m: Machine, k: ExecutionContext => MachineOp) =>
+    k(m.cxt) // FIXME: Handle missing object.
   }
 
   def getDirectivePrologue(ses: List[SourceElement]): List[String] = {
@@ -388,19 +407,36 @@ class Interpreter {
         arg
       }
 //    If Type(func) is not Object, throw a TypeError exception.
-      assert(typ(func) == TyObj) // FIXME: Should be a TypeError
+      if (typ(func) != TyObj) moThrow("TypeError") else moNop
 //    If IsCallable(func) is false, throw a TypeError exception.
-      assert(isCallable(func))
+      if (!isCallable(func)) moThrow("TypeError") else moNop
+      val thisValue = if (typ(ref) == TyRef) {
 //    If Type(ref) is Reference, then
+        if (isPropertyReference(ref.asInstanceOf[VRef])) {
 //        If IsPropertyReference(ref) is true, then
+          getBase(ref.asInstanceOf[VRef])
 //            Let thisValue be GetBase(ref).
+        } else {
+          val envRec = getBase(ref.asInstanceOf[VRef]).asInstanceOf[EnvironmentRecord]
 //        Else, the base of ref is an Environment Record
+          envRec.implicitThisValue
 //            Let thisValue be the result of calling the ImplicitThisValue concrete method of GetBase(ref).
+        }
+      } else {
 //    Else, Type(ref) is not Reference.
+        VUndef
 //        Let thisValue be undefined.
+      }
+      val funcData = load(func.asInstanceOf[VObj])
+      funcData.asInstanceOf[CallableObj].call(thisValue, argList)
 //    Return the result of calling the [[Call]] internal method on func, providing thisValue as the this value and providing the list argList as the argument values.
 //The production CallExpression : CallExpression Arguments is evaluated in exactly the same manner, except that the contained CallExpression is evaluated in step 1.
-      VUndef // FIXME: Stub
+    }
+    case Identifier(name) => {
+      val cxt = currentCxt
+      val env = currentCxt.lexEnv
+      val strict = isStrictModeCode(cxt.code)
+      getIdentifierReference(Some(env), name, strict)
     }
   }
 
@@ -442,7 +478,22 @@ class Interpreter {
     case EvalCode(ses, directStrictCall) => hasUseStrictDirective(ses) || directStrictCall
     case FunctionCode(_, ses, declaredInStrict) => declaredInStrict || hasUseStrictDirective(ses)
   }
-  
+
+  // GetIdentifierReference(lex, name, strict) in spec
+  def getIdentifierReference(lex: Option[LexicalEnvironment], name: String, strict: Boolean): VRef @cps[MachineOp] = {
+    if (lex == None) {
+      VRef(VUndef, name, strict)
+    }
+    val envRec = lex.get.er
+    val exists = envRec.hasBinding(name)
+    if (exists) {
+      moVal(VRef(envRec, name, strict))
+    } else {
+      val outer = lex.get.outer
+      getIdentifierReference(outer, name, strict)
+    }
+  }
+
   def instantiateDeclarationBinding(m: Machine, code: Code, args: List[Val]): Machine = {
     val env = m.cxt.varEnv
     val configurableBindings = code match {
@@ -475,7 +526,7 @@ class Interpreter {
     val globalObj = VObj(1)
     val heap = Heap(Map.empty, 2) // FIXME: Store global object data
     val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalObj), None)
-    val progCxt = ExecutionContext(globalEnv, globalEnv, globalObj)
+    val progCxt = ExecutionContext(globalEnv, globalEnv, globalObj, GlobalCode(p.ses))
     val m = Machine(progCxt, Heap(Map.empty, 0), globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
