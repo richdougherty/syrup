@@ -223,9 +223,12 @@ class Interpreter {
     shift((k: A => MachineOp) => MOUpdate((m: Machine) => update(m, k)))
   }
 
-  def moThrow(errorType: String): Nothing @cps[MachineOp] = shift((k: Nothing => MachineOp) => {
-    MOComp((_: Machine) => Completion(CThrow, Some(VStr(errorType)), None)) // FIXME: Look up actual value.
+  def moComplete(c: Completion): Nothing @cps[MachineOp] = shift((k: Nothing => MachineOp) => {
+    MOComp((_: Machine) => c) // FIXME: Look up actual value.
   })
+
+  def moThrow(errorType: String) =
+    moComplete(Completion(CThrow, Some(VStr(errorType)), None)) // FIXME: Look up actual value.
 
   // Pass a value; used to work around continuations plugin bugs.
   def moVal[A](a: A) = moAccess[A] { (m: Machine, k: A => MachineOp) =>
