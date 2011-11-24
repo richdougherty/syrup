@@ -118,7 +118,7 @@ class Interpreter {
     def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp]
     def getProperty(propertyName: String): Option[Prop] @cps[MachineOp]
     def put(propertyName: String, v: Val, throwError: Boolean): Unit @cps[MachineOp]
-    def canPut(propertyName: String): Boolean
+    def canPut(propertyName: String): Boolean @cps[MachineOp]
     def hasProperty(propertyName: String): Boolean @cps[MachineOp]
     def delete(propertyName: String, throwError: Boolean): Boolean
     def defaultValue(hint: String): Val // returns primitive vals only
@@ -203,7 +203,27 @@ class Interpreter {
       }
       ()
     }
-    def canPut(propertyName: String): Boolean = ???
+    def canPut(propertyName: String): Boolean @cps[MachineOp] = {
+      val desc = getOwnProperty(propertyName)
+      desc match {
+        case Some(ap: AccessorProp) => moVal(ap.set != VUndef)
+        case Some(dp: DataProp) => moVal(dp.writable)
+        case _ => {
+          val proto = prototype
+          proto match {
+            case None => moVal(extensible)
+            case _ => {
+              val inherited = getProperty(propertyName)
+              inherited match {
+                case None => extensible
+                case Some(ap: AccessorProp) => (ap.set != VUndef)
+                case Some(dp: DataProp) => dp.writable
+              }
+            }
+          }
+        }
+      }
+    }
     def hasProperty(propertyName: String): Boolean @cps[MachineOp] = {
       val desc = getProperty(propertyName)
       desc.isDefined
