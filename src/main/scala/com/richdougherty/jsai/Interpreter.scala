@@ -309,8 +309,8 @@ class Interpreter {
         case (None, _) if extensible => Update
         case (None, _) => Reject
         case (Some(current), proposed) if (current == proposed) => Leave
-        case (Some(current: DataProp), proposed: DataProp) if (
-            (current.configurable || current.writable) && current == proposed.copy(value = current.value)) => Update
+        case (Some(current), _) if (current.configurable) => Update
+        case (Some(current: DataProp), proposed: DataProp) if (current.writable && current == proposed.copy(value = current.value)) => Update
         case _ => Reject
       }
 
