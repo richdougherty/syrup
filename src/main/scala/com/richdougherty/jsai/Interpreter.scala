@@ -1,5 +1,6 @@
 package com.richdougherty.jsai
 
+import scala.annotation.tailrec
 import scala.collection.IterableLike
 import scala.collection.generic.CanBuildFrom
 import scala.collection.GenTraversableOnce
@@ -9,13 +10,13 @@ import Parser.CallExpression
 import Parser.Expression
 import Parser.ExpressionStatement
 import Parser.Identifier
+import Parser.FunctionDeclaration
 import Parser.FunctionDeclarationSourceElement
 import Parser.InfixExpression
 import Parser.ReturnStatement
 import Parser.SourceElement
 import Parser.StatementSourceElement
 import Parser.StringLiteral
-import com.richdougherty.jsai.Parser.FunctionDeclaration
 
 class Interpreter {
   
@@ -111,16 +112,16 @@ class Interpreter {
     // Required methods
     def prototype: Option[VObj]
     def clazz: Val
-    def extensible: Val
+    def extensible: Boolean
     def get(propertyName: String): LangVal
-    def getOwnProperty(propertyName: String): Option[Prop]
+    def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp]
     def getProperty(propertyName: String): Option[Prop] @cps[MachineOp]
     def put(propertyName: String, v: Val, strict: Boolean): Val
     def canPut(propertyName: String): Boolean
     def hasProperty(propertyName: String): Boolean @cps[MachineOp]
     def delete(propertyName: String, failureHandling: Boolean): Boolean
     def defaultValue(hint: String): Val // returns primitive vals only
-    def defineOwnProperty(propertyName: String, propDesc: Prop, failureHandling: Boolean): Boolean
+    def defineOwnProperty(propertyName: String, propDesc: PropDesc, failureHandling: Boolean): Boolean @cps[MachineOp]
     // Optional methods
     protected def ??? = error("Not implemented")
     def primitiveVal: LangVal = ???
@@ -138,21 +139,21 @@ class Interpreter {
   trait CallableObj {
     def call(thisObj: Val, args: List[Val]): Val
   }
-  case class NativeObj(d: Map[PropName, Prop] = Map.empty, prototype: Option[VObj] = None) extends ObjData {
+  case class NativeObj(props: Cell[Map[PropName, Prop]], prototype: Option[VObj]) extends ObjData {
     def clazz: Val = ???
-    def extensible: Val = ???
+    def extensible: Boolean = true
     def get(propertyName: String): LangVal = ???
-    def getOwnProperty(propertyName: String): Option[Prop] = {
-      d.get(propertyName) // Spec returns a copy of the (mutable) property descriptor
+    def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp] = {
+      @*(props).get(propertyName) // Spec returns a copy of the (mutable) property descriptor
     }
     def getProperty(propertyName: String): Option[Prop] @cps[MachineOp] = {
       val propOption = getOwnProperty(propertyName)
       propOption match {
-        case Some(_) => propOption
+        case Some(_) => moVal(propOption)
         case None => {
           val protoOption = prototype
           protoOption match {
-            case None => None
+            case None => moVal(None)
             case Some(proto) => {
               val protoData = ^(proto.cell)
               protoData.getProperty(propertyName)
@@ -169,11 +170,109 @@ class Interpreter {
     }
     def delete(propertyName: String, failureHandling: Boolean): Boolean = ???
     def defaultValue(hint: String): Val = ???
-    def defineOwnProperty(propertyName: String, propDesc: Prop, failureHandling: Boolean): Boolean = ???
+    def defineOwnProperty(propertyName: String, desc: PropDesc, shouldThrow: Boolean): Boolean @cps[MachineOp] = {
+      val currentOpt = getOwnProperty(propertyName)
+
+      def defaultDataProp = DataProp(
+        DefaultPropValue.value,
+        DefaultPropValue.writable,
+        DefaultPropValue.enumerable,
+        DefaultPropValue.configurable
+      )
+      def defaultAccessorProp = AccessorProp(
+        DefaultPropValue.get,
+        DefaultPropValue.set,
+        DefaultPropValue.enumerable,
+        DefaultPropValue.configurable
+      )
+      def updateDataProp(dp: DataProp, desc: PropDesc): DataProp = {
+        DataProp(
+          desc.value.getOrElse(dp.value),
+          desc.writable.getOrElse(dp.writable),
+          desc.enumerable.getOrElse(dp.enumerable),
+          desc.configurable.getOrElse(dp.configurable)
+        )
+      }
+      def updateAccessorProp(ap: AccessorProp, desc: PropDesc): AccessorProp = {
+        AccessorProp(
+          desc.get.getOrElse(ap.get),
+          desc.get.getOrElse(ap.set),
+          desc.enumerable.getOrElse(ap.enumerable),
+          desc.configurable.getOrElse(ap.configurable)
+        )
+      }
+
+      val proposed = if (isDataDescriptor(desc)) {
+        val toUpdate = currentOpt match {
+          case None => defaultDataProp
+          case Some(dp: DataProp) => dp
+          case Some(ap: AccessorProp) => DataProp(
+            DefaultPropValue.value,
+            DefaultPropValue.writable,
+            ap.enumerable,
+            ap.configurable
+          )
+        }
+        updateDataProp(toUpdate, desc)
+      } else if (isAccessorDescriptor(desc)) {
+        val toUpdate = currentOpt match {
+          case None => defaultAccessorProp
+          case Some(dp: DataProp) => AccessorProp(
+            DefaultPropValue.get,
+            DefaultPropValue.set,
+            dp.enumerable,
+            dp.configurable
+          )
+          case Some(ap: AccessorProp) => ap
+        }
+        updateAccessorProp(toUpdate, desc)
+      } else if (isGenericDescriptor(desc)) {
+        val toUpdate = currentOpt.getOrElse(defaultDataProp)
+        toUpdate match {
+          case dp: DataProp => updateDataProp(dp, desc)
+          case ap: AccessorProp => updateAccessorProp(ap, desc)
+        }
+      } else {
+        error("Property descriptor must be either data, accessor or generic: " + desc)
+      }
+
+      // FIXME: Spec should reject when both are dataprop, configurable is false and writable is changed from true to false - but it doesn't!
+      // We will reject, but need to check.
+      sealed trait Action
+      case object Update extends Action
+      case object Reject extends Action
+      case object Leave extends Action
+      
+      val action = (currentOpt, proposed) match {
+        case (None, _) if extensible => Update
+        case (None, _) => Reject
+        case (Some(current), proposed) if (current == proposed) => Leave
+        case (Some(current: DataProp), proposed: DataProp) if (
+            (current.configurable || current.writable) && current == proposed.copy(value = current.value)) => Update
+        case _ => Reject
+      }
+
+      action match {
+        case Update => {
+          props @= @*(props).updated(propertyName, proposed)
+          true
+        }
+        case Reject => {
+          moThrow("TypeError")
+          false
+        }
+        case Leave => {
+          moVal(true)
+        }
+      }
+    }
   }
 
   type PropName = String
-  sealed trait Prop
+  trait Prop {
+    def enumerable: Boolean
+    def configurable: Boolean
+  }
   case class DataProp(
     value: Val,
     writable: Boolean,
@@ -184,6 +283,27 @@ class Interpreter {
     set: Val,
     enumerable: Boolean,
     configurable: Boolean) extends Prop
+
+  object DefaultPropValue {
+    def value = VUndef
+    def get = VUndef
+    def set = VUndef
+    def writable = false
+    def enumerable = false
+    def configurable = false
+  }
+
+  final case class PropDesc(
+    value: Option[Val] = None,
+    writable: Option[Boolean] = None,
+    enumerable: Option[Boolean] = None,
+    configurable: Option[Boolean] = None,
+    get: Option[Val] = None,
+    set: Option[Val] = None
+  ) {
+    // Rule from spec
+    assert(!(isDataDescriptor(this) && isAccessorDescriptor(this)))
+  }
 
   case class Machine(cxt: ExecutionContext, heap: Heap, globalObj: VObj, globalEnv: LexicalEnvironment)
   case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: VObj, code: Code)
@@ -221,7 +341,8 @@ class Interpreter {
       val bindings = @*(bindingObj.cell)
       assert(!bindings.hasProperty(name))
       val configValue = canDelete
-      bindings.defineOwnProperty(name, DataProp(VUndef, true, true, configValue), true)
+      val propDesc = PropDesc(value = Some(VUndef), writable = Some(true), enumerable = Some(true), configurable = Some(configValue))
+      bindings.defineOwnProperty(name, propDesc, true)
       ()
     }
     def setMutableBinding(name: String, v: Val, strict: Boolean) = {
@@ -250,8 +371,9 @@ class Interpreter {
   case class MOAccess(thunk: Machine => MachineOp) extends MachineOp
   case class MOUpdate(thunk: Machine => (Machine, MachineOp)) extends MachineOp
   case class MOComp(thunk: Machine => Completion) extends MachineOp
-  
-  def runMachineOp(m: Machine, mo: MachineOp): (Machine, Completion) = mo match {
+
+  @tailrec
+  final def runMachineOp(m: Machine, mo: MachineOp): (Machine, Completion) = mo match {
     case MOAccess(thunk) => {
       val mo1 = thunk(m)
       runMachineOp(m, mo1)
@@ -300,7 +422,9 @@ class Interpreter {
   }
 
   def @<[A](a: A) = {
+    // FIXME: Maybe interact with heap directly for speed?
     val cell = alloc[A]
+    cell @= a
     cell
   }
 
@@ -417,6 +541,21 @@ class Interpreter {
       }
     }
     case _ => v
+  }
+
+  // IsAccessorDescriptor(Desc) in spec
+  def isAccessorDescriptor(desc: PropDesc): Boolean = {
+    desc.get.isDefined || desc.set.isDefined
+  }
+
+  // IsDataDescriptor(Desc) in spec
+  def isDataDescriptor(desc: PropDesc): Boolean = {
+    desc.value.isDefined || desc.writable.isDefined
+  }
+
+  // IsGenericDescriptor(Desc) in spec
+  def isGenericDescriptor(desc: PropDesc): Boolean = {
+    !(isAccessorDescriptor(desc) || isDataDescriptor(desc))
   }
 
   // envRec.GetBindingValue(N, S) in spec
@@ -654,13 +793,13 @@ class Interpreter {
     val globalCode = GlobalCode(p.ses)
     val h1 = new Heap()
     val (h2, globalObjCell) = h1.alloc[ObjData]
-    val h3 = h2.store(globalObjCell, new NativeObj())
     val globalObj = VObj(globalObjCell)
     val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalObj), None)
     val progCxt = ExecutionContext(globalEnv, globalEnv, globalObj, globalCode)
-    val m = Machine(progCxt, h3, globalObj, globalEnv)
+    val m = Machine(progCxt, h2, globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
+      globalObjCell @= new NativeObj(@<(Map.empty), None)
       instantiateDeclarationBindings(Nil)
       val evalCompletion = evaluateSourceElements(p.ses)
       MOComp((_: Machine) => evalCompletion)
