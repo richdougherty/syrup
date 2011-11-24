@@ -109,11 +109,12 @@ class Interpreter {
 
   type ObjPtr = Int
   trait ObjData {
+    def thisVal: VObj
     // Required methods
     def prototype: Option[VObj]
     def clazz: Val
     def extensible: Boolean
-    def get(propertyName: String): LangVal
+    def get(propertyName: String): Val @cps[MachineOp]
     def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp]
     def getProperty(propertyName: String): Option[Prop] @cps[MachineOp]
     def put(propertyName: String, v: Val, strict: Boolean): Val
@@ -139,10 +140,23 @@ class Interpreter {
   trait CallableObj {
     def call(thisObj: Val, args: List[Val]): Val
   }
-  case class NativeObj(props: Cell[Map[PropName, Prop]], prototype: Option[VObj]) extends ObjData {
+  case class NativeObj(thisVal: VObj, props: Cell[Map[PropName, Prop]], prototype: Option[VObj]) extends ObjData {
     def clazz: Val = ???
     def extensible: Boolean = true
-    def get(propertyName: String): LangVal = ???
+    def get(propertyName: String): Val @cps[MachineOp] = {
+      val desc = getProperty(propertyName)
+      desc match {
+        case None => moVal(VUndef)
+        case Some(dp: DataProp) => moVal(dp.value)
+        case Some(ap: AccessorProp) => ap.get match {
+          case VUndef => moVal(VUndef)
+          case obj: VObj => {
+            val callable = @*(obj.cell).asInstanceOf[CallableObj]
+            callable.call(thisVal, Nil)
+          }
+        }
+      }
+    }
     def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp] = {
       @*(props).get(propertyName) // Spec returns a copy of the (mutable) property descriptor
     }
@@ -799,7 +813,7 @@ class Interpreter {
     val m = Machine(progCxt, h2, globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
-      globalObjCell @= new NativeObj(@<(Map.empty), None)
+      globalObjCell @= new NativeObj(globalObj, @<(Map.empty), None)
       instantiateDeclarationBindings(Nil)
       val evalCompletion = evaluateSourceElements(p.ses)
       MOComp((_: Machine) => evalCompletion)
