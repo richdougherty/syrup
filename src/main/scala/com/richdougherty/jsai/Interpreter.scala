@@ -461,7 +461,15 @@ class Interpreter {
   }
 
   def currentCxt = moAccess[ExecutionContext] {(m: Machine, k: ExecutionContext => MachineOp) =>
-    k(m.cxt) // FIXME: Handle missing object.
+    k(m.cxt)
+  }
+
+  def getGlobalObj = moAccess[VObj] {(m: Machine, k: VObj => MachineOp) =>
+    k(m.globalObj)
+  }
+
+  def getGlobalEnv = moAccess[LexicalEnvironment] {(m: Machine, k: LexicalEnvironment => MachineOp) =>
+    k(m.globalEnv)
   }
 
   def getDirectivePrologue(ses: List[SourceElement]): List[String] = {
@@ -789,9 +797,27 @@ class Interpreter {
     }
     cpsIterable(cxt.code.ses).cps.foreach {
       case FunctionDeclarationSourceElement(fd@FunctionDeclaration(fn, _, _)) => {
-        val fo = null // FIXME: Instantiate function
+        val fo = VStr("dummy-function-" + fn) // FIXME: Instantiate function
         val funcAlreadyDeclared = env.hasBinding(fn)
-        if (!funcAlreadyDeclared) { env.createMutableBinding(fn, configurableBindings) } else moNop
+        if (!funcAlreadyDeclared) {
+          env.createMutableBinding(fn, configurableBindings)
+        } else if (!cxt.varEnv.outer.isDefined) {
+          val go = @*(getGlobalObj.cell)
+          val existingProp = go.getProperty(fn).get
+          if (existingProp.configurable) {
+            val propDesc = PropDesc(value = Some(VUndef), writable = Some(true), enumerable = Some(true), configurable = Some(configurableBindings))
+            go.defineOwnProperty(fn, propDesc, true)
+          } else if (
+            existingProp match {
+              case _: AccessorProp => true
+              case dp: DataProp if !(dp.writable && dp.enumerable) => true
+              case _ => false
+            }
+          ) {
+            moThrow("TypeError")
+          } else moNop
+        } else moNop
+        env.setMutableBinding(fn, fo, strict)
       }
       case _ => ()
     }
