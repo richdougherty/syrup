@@ -117,12 +117,12 @@ class Interpreter {
     def get(propertyName: String): Val @cps[MachineOp]
     def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp]
     def getProperty(propertyName: String): Option[Prop] @cps[MachineOp]
-    def put(propertyName: String, v: Val, strict: Boolean): Val
+    def put(propertyName: String, v: Val, throwError: Boolean): Unit @cps[MachineOp]
     def canPut(propertyName: String): Boolean
     def hasProperty(propertyName: String): Boolean @cps[MachineOp]
-    def delete(propertyName: String, failureHandling: Boolean): Boolean
+    def delete(propertyName: String, throwError: Boolean): Boolean
     def defaultValue(hint: String): Val // returns primitive vals only
-    def defineOwnProperty(propertyName: String, propDesc: PropDesc, failureHandling: Boolean): Boolean @cps[MachineOp]
+    def defineOwnProperty(propertyName: String, propDesc: PropDesc, throwError: Boolean): Boolean @cps[MachineOp]
     // Optional methods
     protected def ??? = error("Not implemented")
     def primitiveVal: LangVal = ???
@@ -176,15 +176,41 @@ class Interpreter {
         }
       }
     }
-    def put(propertyName: String, v: Val, strict: Boolean): Val = ???
+    def put(propertyName: String, v: Val, throwError: Boolean): Unit @cps[MachineOp] = {
+      if (!canPut(propertyName)) {
+        if (throwError) moThrow("TypeError") else moNop
+      } else {
+        val ownDesc = getOwnProperty(propertyName)
+        ownDesc match {
+          case Some(dp: DataProp) => {
+            val valueDesc = PropDesc(value = Some(v))
+            defineOwnProperty(propertyName, valueDesc, throwError)
+          }
+          case _ => {
+            val desc = getProperty(propertyName)
+            desc match {
+              case Some(ap: AccessorProp) => {
+                val setter = @*(ap.set.asInstanceOf[VObj].cell) // Spec says cannot be undefined
+                setter.asInstanceOf[CallableObj].call(thisVal, v::Nil)
+              }
+              case _ => {
+                val newDesc = PropDesc(value = Some(v), writable = Some(true), enumerable = Some(true), configurable = Some(true))
+                defineOwnProperty(propertyName, newDesc, throwError)
+              }
+            }
+          }
+        }
+      }
+      ()
+    }
     def canPut(propertyName: String): Boolean = ???
     def hasProperty(propertyName: String): Boolean @cps[MachineOp] = {
       val desc = getProperty(propertyName)
       desc.isDefined
     }
-    def delete(propertyName: String, failureHandling: Boolean): Boolean = ???
+    def delete(propertyName: String, throwError: Boolean): Boolean = ???
     def defaultValue(hint: String): Val = ???
-    def defineOwnProperty(propertyName: String, desc: PropDesc, shouldThrow: Boolean): Boolean @cps[MachineOp] = {
+    def defineOwnProperty(propertyName: String, desc: PropDesc, throwError: Boolean): Boolean @cps[MachineOp] = {
       val currentOpt = getOwnProperty(propertyName)
 
       def defaultDataProp = DataProp(
