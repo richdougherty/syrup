@@ -84,7 +84,10 @@ class Interpreter {
       new Heap(cells.updated(cell.id, a), nextId)
   }
 
-  sealed trait Val
+  sealed trait ValOrRef
+  case class Ref(base: Val, refName: String, strictRef: Boolean) extends ValOrRef
+
+  sealed trait Val extends ValOrRef
 
   sealed trait LangVal extends Val
   case object VUndef extends LangVal
@@ -95,7 +98,6 @@ class Interpreter {
   case class VObj(cell: Cell[ObjData]) extends LangVal
 
   sealed trait SpecVal extends Val
-  case class VRef(base: Val, refName: String, strictRef: Boolean) extends Val
   
   sealed trait Typ
   case object TyUndef extends Typ
@@ -138,7 +140,7 @@ class Interpreter {
     def parameterMap: VObj = ???
   }
   trait CallableObj {
-    def call(thisObj: Val, args: List[Val]): Val @cps[MachineOp]
+    def call(thisObj: Val, args: List[Val]): ValOrRef @cps[MachineOp]
   }
   trait BaseObj extends ObjData {
     def thisVal: VObj
@@ -154,7 +156,8 @@ class Interpreter {
           case VUndef => moVal(VUndef)
           case obj: VObj => {
             val callable = @*(obj.cell).asInstanceOf[CallableObj]
-            callable.call(thisVal, Nil)
+            callable.call(thisVal, Nil).asInstanceOf[Val]
+            // FIXME: Should spec throw a TypeError if getter returns a reference - or call getValue()?
           }
         }
       }
@@ -339,7 +342,7 @@ class Interpreter {
       override val scope: LexicalEnvironment
       ) extends BaseObj {
     def prototype: Option[VObj] = None // FIXME: Stub
-    def call(thisArg: Val, args: List[Val]): Val @cps[MachineOp] = {
+    def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = {
       val strict = isStrictModeCode(code)
       val thisBinding = if (strict) {
         thisArg
@@ -581,30 +584,29 @@ class Interpreter {
     case _: VStr => TyStr
     case _: VNum => TyNum
     case _: VObj => TyObj
-    case _: VRef => TyRef
     case _: EnvironmentRecord => TyEnvRec
   }
 
   // GetBase(V) in spec
-  def getBase(v: VRef): Val = v.base
+  def getBase(v: Ref): Val = v.base
 
   // IsUnresolvableReference(V) in spec
-  def isUnresolvableReference(v: VRef): Boolean = (v.base == VUndef)
+  def isUnresolvableReference(v: Ref): Boolean = (v.base == VUndef)
 
   // GetReferencedName(V) in spec
-  def getReferencedName(v: VRef): String = v.refName
+  def getReferencedName(v: Ref): String = v.refName
 
   // IsStrictReference(V) in spec
-  def isStrictReference(v: VRef): Boolean = v.strictRef
+  def isStrictReference(v: Ref): Boolean = v.strictRef
 
   // IsPropertyReference(V) in spec
-  def isPropertyReference(v: VRef): Boolean = v.base match {
+  def isPropertyReference(v: Ref): Boolean = v.base match {
     case _: VObj => true
     case _ => hasPrimitiveBase(v)
   }
 
   // HasPrimitiveBase(V) in spec
-  def hasPrimitiveBase(v: VRef): Boolean = v.base match {
+  def hasPrimitiveBase(v: Ref): Boolean = v.base match {
     case _: VBool => true
     case _: VStr => true
     case _: VNum => true
@@ -612,8 +614,8 @@ class Interpreter {
   }
 
   // GetValue(V) in spec
-  def getValue(v: Val): Val @cps[MachineOp] = v match {
-    case v: VRef => {
+  def getValue(v: ValOrRef): Val @cps[MachineOp] = v match {
+    case v: Ref => {
       val base = getBase(v)
       if (isUnresolvableReference(v)) moThrow("ReferenceError") else moNop
       if (isPropertyReference(v)) {
@@ -633,7 +635,8 @@ class Interpreter {
                 moVal(VUndef)
               } else {
                 val getterData = ^(base.asInstanceOf[VObj].cell)
-                getterData.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], Nil)
+                getterData.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], Nil).asInstanceOf[Val]
+                // FIXME: Should spec throw a TypeError if getter returns a reference - or call recursively?
               }
             }
           }
@@ -644,7 +647,7 @@ class Interpreter {
         getBindingValue(baseEnvRec, getReferencedName(v), isStrictReference(v))
       }
     }
-    case _ => v
+    case v: Val => v
   }
 
   // IsAccessorDescriptor(Desc) in spec
@@ -728,7 +731,7 @@ class Interpreter {
     case _ => false
   }
 
-  def evaluateExpression(expr: Expression): Val @cps[MachineOp] = expr match {
+  def evaluateExpression(expr: Expression): ValOrRef @cps[MachineOp] = expr match {
     case InfixExpression(l, op, r) => op match {
       case AdditionOperator => {
         val lref = evaluateExpression(l)
@@ -767,22 +770,25 @@ class Interpreter {
       if (typ(func) != TyObj) moThrow("TypeError") else moNop
 //    If IsCallable(func) is false, throw a TypeError exception.
       if (!isCallable(func)) moThrow("TypeError") else moNop
-      val thisValue = if (typ(ref) == TyRef) {
+      val thisValue = ref match {
+        case ref: Ref => {
 //    If Type(ref) is Reference, then
-        if (isPropertyReference(ref.asInstanceOf[VRef])) {
+          if (isPropertyReference(ref.asInstanceOf[Ref])) {
 //        If IsPropertyReference(ref) is true, then
-          getBase(ref.asInstanceOf[VRef])
+            getBase(ref.asInstanceOf[Ref])
 //            Let thisValue be GetBase(ref).
-        } else {
-          val envRec = getBase(ref.asInstanceOf[VRef]).asInstanceOf[EnvironmentRecord]
+          } else {
+            val envRec = getBase(ref.asInstanceOf[Ref]).asInstanceOf[EnvironmentRecord]
 //        Else, the base of ref is an Environment Record
-          envRec.implicitThisValue
+            envRec.implicitThisValue
 //            Let thisValue be the result of calling the ImplicitThisValue concrete method of GetBase(ref).
+          }
         }
-      } else {
+        case _: Val => {
 //    Else, Type(ref) is not Reference.
-        VUndef
+          VUndef
 //        Let thisValue be undefined.
+        }
       }
       val funcData = ^(func.asInstanceOf[VObj].cell)
       funcData.asInstanceOf[CallableObj].call(thisValue, argList)
@@ -845,14 +851,14 @@ class Interpreter {
   }
 
   // GetIdentifierReference(lex, name, strict) in spec
-  def getIdentifierReference(lex: Option[LexicalEnvironment], name: String, strict: Boolean): VRef @cps[MachineOp] = {
+  def getIdentifierReference(lex: Option[LexicalEnvironment], name: String, strict: Boolean): Ref @cps[MachineOp] = {
     lex match {
-      case None => VRef(VUndef, name, strict)
+      case None => Ref(VUndef, name, strict)
       case Some(lex) => {
         val envRec = lex.er
         val exists = envRec.hasBinding(name)
         if (exists) {
-          moVal(VRef(envRec, name, strict))
+          moVal(Ref(envRec, name, strict))
         } else {
           val outer = lex.outer
           getIdentifierReference(outer, name, strict)
