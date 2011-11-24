@@ -138,9 +138,11 @@ class Interpreter {
     def parameterMap: VObj = ???
   }
   trait CallableObj {
-    def call(thisObj: Val, args: List[Val]): Val
+    def call(thisObj: Val, args: List[Val]): Val @cps[MachineOp]
   }
-  case class NativeObj(thisVal: VObj, props: Cell[Map[PropName, Prop]], prototype: Option[VObj]) extends ObjData {
+  trait BaseObj extends ObjData {
+    def thisVal: VObj
+    def props: Cell[Map[PropName, Prop]]
     def clazz: Val = ???
     def extensible: Boolean = true
     def get(propertyName: String): Val @cps[MachineOp] = {
@@ -328,6 +330,36 @@ class Interpreter {
     }
   }
 
+  case class NativeObj(thisVal: VObj, props: Cell[Map[PropName, Prop]], prototype: Option[VObj]) extends BaseObj
+
+  case class NativeFunction(
+      thisVal: VObj,
+      props: Cell[Map[PropName, Prop]],
+      override val code: FunctionCode,
+      override val scope: LexicalEnvironment
+      ) extends BaseObj {
+    def prototype: Option[VObj] = None // FIXME: Stub
+    def call(thisArg: Val, args: List[Val]): Val @cps[MachineOp] = {
+      val strict = isStrictModeCode(code)
+      val thisBinding = if (strict) {
+        thisArg
+      } else if (thisArg == VNull || thisArg == VUndef) {
+        getGlobalObj
+      } else if (typ(thisArg) != TyObj) {
+        toObject(thisArg)
+      } else {
+        thisArg
+      }
+      val localEnv = newDeclarativeEnvironment(Some(scope))
+      val cxt = ExecutionContext(localEnv, localEnv, thisBinding.asInstanceOf[VObj], code)
+      val parentCxt = currentCxt
+      setCurrentCxt(cxt)
+      instantiateDeclarationBindings(args)
+      moComplete(evaluateSourceElements(code.ses))
+      // FIXME: Proper completion handling
+    }
+  }
+
   type PropName = String
   trait Prop {
     def enumerable: Boolean
@@ -508,6 +540,10 @@ class Interpreter {
 
   def currentCxt = moAccess[ExecutionContext] {(m: Machine, k: ExecutionContext => MachineOp) =>
     k(m.cxt)
+  }
+
+  def setCurrentCxt(cxt: ExecutionContext) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
+    (m.copy(cxt = cxt), k(()))
   }
 
   def getGlobalObj = moAccess[VObj] {(m: Machine, k: VObj => MachineOp) =>
@@ -800,6 +836,12 @@ class Interpreter {
     case GlobalCode(ses) => hasUseStrictDirective(ses)
     case EvalCode(ses, directStrictCall) => hasUseStrictDirective(ses) || directStrictCall
     case FunctionCode(_, ses, declaredInStrict) => declaredInStrict || hasUseStrictDirective(ses)
+  }
+
+  // NewDeclarativeEnvironment(E) in spec
+  def newDeclarativeEnvironment(outer: Option[LexicalEnvironment]): LexicalEnvironment @cps[MachineOp] = {
+    val envRec = DeclarativeEnvironmentRecord(@<(Map.empty))
+    LexicalEnvironment(envRec, outer)
   }
 
   // GetIdentifierReference(lex, name, strict) in spec
