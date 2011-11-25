@@ -370,6 +370,13 @@ class Interpreter {
   case class Machine(cxt: ExecContext, heap: Heap, globalObj: VObj, globalEnv: LexEnv)
   case class ExecContext(varEnv: LexEnv, lexEnv: LexEnv, thisBinding: VObj, code: Code)
 
+  sealed trait Code {
+    def ses: List[SourceElement]
+  }
+  case class GlobalCode(ses: List[SourceElement]) extends Code
+  case class EvalCode(ses: List[SourceElement], directStrictCall: Boolean) extends Code
+  case class FunctionCode(func: VObj, ses: List[SourceElement], strict: Boolean) extends Code
+
   case class LexEnv(er: EnvRec, outer: Option[LexEnv])
 
   sealed trait ValOrEnvRec
@@ -807,14 +814,7 @@ class Interpreter {
       case (abrupt, _) => abrupt
     }
   }
-  
-  sealed trait Code {
-    def ses: List[SourceElement]
-  }
-  case class GlobalCode(ses: List[SourceElement]) extends Code
-  case class EvalCode(ses: List[SourceElement], directStrictCall: Boolean) extends Code
-  case class FunctionCode(func: VObj, ses: List[SourceElement], strict: Boolean) extends Code
-  
+
   def isStrictModeCode(code: Code): Boolean = code match {
     case GlobalCode(ses) => hasUseStrictDirective(ses)
     case EvalCode(ses, directStrictCall) => hasUseStrictDirective(ses) || directStrictCall
