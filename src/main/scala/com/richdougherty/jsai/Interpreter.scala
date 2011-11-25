@@ -90,15 +90,6 @@ class Interpreter {
   sealed trait ValOrRef
   case class Ref(base: ValOrEnvRec, refName: String, strictRef: Boolean) extends ValOrRef
 
-  sealed trait Val extends ValOrRef with ValOrEnvRec
-
-  case object VUndef extends Val
-  case object VNull extends Val
-  case class VBool(d: Boolean) extends Val
-  case class VStr(d: String) extends Val
-  case class VNum(d: Double) extends Val
-  case class VObj(cell: Cell[ObjData]) extends Val
-
   sealed trait Typ
   case object TyUndef extends Typ
   case object TyNull extends Typ
@@ -107,9 +98,13 @@ class Interpreter {
   case object TyNum extends Typ
   case object TyObj extends Typ
 
-  type ObjPtr = Int
-  trait ObjData {
-    def thisVal: VObj
+  sealed trait Val extends ValOrRef with ValOrEnvRec
+  case object VUndef extends Val
+  case object VNull extends Val
+  case class VBool(d: Boolean) extends Val
+  case class VStr(d: String) extends Val
+  case class VNum(d: Double) extends Val
+  trait VObj extends Val {
     // Required methods
     def prototype: Option[VObj]
     def clazz: String
@@ -137,12 +132,13 @@ class Interpreter {
     def `match`(s: String, index: Int): VObj = ???
     def parameterMap: VObj = ???
   }
+
   trait CallableObj {
     def call(thisObj: Val, args: List[Val]): ValOrRef @cps[MachineOp]
   }
-  trait BaseObj extends ObjData {
-    def thisVal: VObj
-    def props: Cell[Map[PropName, Prop]]
+  trait BaseObj extends VObj {
+    def props: Map[PropName, Prop] @cps[MachineOp]
+    protected def setProps(newProps: Map[PropName, Prop]): Unit @cps[MachineOp]
     def clazz: String = ???
     def extensible: Boolean = true
     def get(propertyName: String): Val @cps[MachineOp] = {
@@ -153,15 +149,15 @@ class Interpreter {
         case Some(ap: AccessorProp) => ap.get match {
           case VUndef => moVal(VUndef)
           case obj: VObj => {
-            val callable = @*(obj.cell).asInstanceOf[CallableObj]
-            callable.call(thisVal, Nil).asInstanceOf[Val]
+            val callable = obj.asInstanceOf[CallableObj]
+            callable.call(this, Nil).asInstanceOf[Val]
             // FIXME: Should spec throw a TypeError if getter returns a reference - or call getValue()?
           }
         }
       }
     }
     def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp] = {
-      @*(props).get(propertyName) // Spec returns a copy of the (mutable) property descriptor
+      props.get(propertyName) // Spec returns a copy of the (mutable) property descriptor
     }
     def getProperty(propertyName: String): Option[Prop] @cps[MachineOp] = {
       val propOption = getOwnProperty(propertyName)
@@ -171,10 +167,7 @@ class Interpreter {
           val protoOption = prototype
           protoOption match {
             case None => moVal(None)
-            case Some(proto) => {
-              val protoData = @*(proto.cell)
-              protoData.getProperty(propertyName)
-            }
+            case Some(proto) => proto.getProperty(propertyName)
           }
         }
       }
@@ -193,8 +186,8 @@ class Interpreter {
             val desc = getProperty(propertyName)
             desc match {
               case Some(ap: AccessorProp) => {
-                val setter = @*(ap.set.asInstanceOf[VObj].cell) // Spec says cannot be undefined
-                setter.asInstanceOf[CallableObj].call(thisVal, v::Nil)
+                val setter = ap.set // Spec says cannot be undefined
+                setter.asInstanceOf[CallableObj].call(this, v::Nil)
               }
               case _ => {
                 val newDesc = PropDesc(value = Some(v), writable = Some(true), enumerable = Some(true), configurable = Some(true))
@@ -318,7 +311,7 @@ class Interpreter {
 
       action match {
         case Update => {
-          props @= @*(props).updated(propertyName, proposed)
+          setProps(props.updated(propertyName, proposed))
           true
         }
         case Reject => {
@@ -332,7 +325,10 @@ class Interpreter {
     }
   }
 
-  case class NativeObj(thisVal: VObj, props: Cell[Map[PropName, Prop]], prototype: Option[VObj]) extends BaseObj
+  case class NativeObj(propsCell: Cell[Map[PropName, Prop]], prototype: Option[VObj]) extends BaseObj {
+      def props = @*(propsCell)
+      def setProps(newProps: Map[PropName, Prop]) = propsCell @= newProps
+  }
 
   type PropName = String
   trait Prop {
@@ -438,11 +434,10 @@ class Interpreter {
   }
   case class ObjectEnvRec(bindingObj: VObj, provideThis: Boolean = false) extends EnvRec {
     def hasBinding(name: String): Boolean @cps[MachineOp] = {
-      val bindingObjData = @*(bindingObj.cell)
-      bindingObjData.hasProperty(name)
+      bindingObj.hasProperty(name)
     }
     def createMutableBinding(name: String, canDelete: Boolean) = {
-      val bindings = @*(bindingObj.cell)
+      val bindings = bindingObj
       assert(!bindings.hasProperty(name))
       val configValue = canDelete
       val propDesc = PropDesc(value = Some(VUndef), writable = Some(true), enumerable = Some(true), configurable = Some(configValue))
@@ -450,19 +445,18 @@ class Interpreter {
       ()
     }
     def setMutableBinding(name: String, v: Val, strict: Boolean) = {
-      val bindings = @*(bindingObj.cell)
+      val bindings = bindingObj
       bindings.put(name, v, strict)
       ()
     }
     def getBindingValue(name: String, strict: Boolean): Val @cps[MachineOp] = {
       val bindings = bindingObj
-      val bindingsData = @*(bindings.cell)
-      val value = bindingsData.hasProperty(name)
+      val value = bindings.hasProperty(name)
       if (!value) {
         if (!strict) VUndef
         moThrow("ReferenceError")
       } else moNop
-      bindingsData.get(name)
+      bindings.get(name)
     }
     def implicitThisValue: Val = {
       if (provideThis) bindingObj else VUndef
@@ -529,11 +523,6 @@ class Interpreter {
   def alloc[A] = moUpdate[Cell[A]] {(m: Machine, k: Cell[A] => MachineOp) =>
     val (h, cell) = m.heap.alloc[A]
     (m.copy(heap = h), k(cell))
-  }
-
-  def newObj = {
-    val cell = alloc[ObjData]
-    VObj(cell)
   }
 
   def @<[A](a: A) = {
@@ -637,12 +626,10 @@ class Interpreter {
       if (isUnresolvableReference(v)) moThrow("ReferenceError") else moNop
       if (isPropertyReference(v)) {
         if (!hasPrimitiveBase(v)) {
-          val baseData = @*(base.asInstanceOf[VObj].cell)
-          baseData.get(getReferencedName(v))
+          base.asInstanceOf[VObj].get(getReferencedName(v))
         } else {
           val o = toObject(base.asInstanceOf[Val])
-          val odata = @*(o.cell)
-          val descOption = odata.getProperty(getReferencedName(v))
+          val descOption = o.getProperty(getReferencedName(v))
           descOption match {
             case None => VUndef
             case Some(desc: DataProp) => desc.value
@@ -651,9 +638,8 @@ class Interpreter {
               if (getter == VUndef) {
                 moVal(VUndef)
               } else {
-                val getterData = @*(base.asInstanceOf[VObj].cell)
-                getterData.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], Nil).asInstanceOf[Val]
-                // FIXME: Should spec throw a TypeError if getter returns a reference - or call recursively?
+                getter.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], Nil).asInstanceOf[Val]
+                // FIXME: Should spec throw a TypeError if getter returns a reference - or call getValue() recursively?
               }
             }
           }
@@ -708,10 +694,7 @@ class Interpreter {
   }
 
   def isCallable(v: Val): Boolean @cps[MachineOp] = v match {
-    case o: VObj => {
-      val objData = @*(o.cell)
-      objData.isInstanceOf[CallableObj]
-    }
+    case o: VObj => o.isInstanceOf[CallableObj]
     case _ => false
   }
 
@@ -774,8 +757,7 @@ class Interpreter {
 //        Let thisValue be undefined.
         }
       }
-      val funcData = @*(func.asInstanceOf[VObj].cell)
-      funcData.asInstanceOf[CallableObj].call(thisValue, argList)
+      func.asInstanceOf[CallableObj].call(thisValue, argList)
 //    Return the result of calling the [[Call]] internal method on func, providing thisValue as the this value and providing the list argList as the argument values.
 //The production CallExpression : CallExpression Arguments is evaluated in exactly the same manner, except that the contained CallExpression is evaluated in step 1.
     }
@@ -840,11 +822,10 @@ class Interpreter {
   // Based on "Creating Function Objects" section in spec
   def newFunctionObj(params: List[String], body: List[SourceElement], lexScope: LexEnv, strict: Boolean): VObj @cps[MachineOp] = {
 //    Create a new native ECMAScript object and let F be that object.
-    val f = VObj(alloc[Cell[ObjData]])
-    val fProps = @<(Map.empty[PropName, Prop])
-    val fData = new BaseObj with CallableObj {
-      def thisVal: VObj = f
-      val props: Cell[Map[PropName, Prop]] = fProps
+    val propsCell = @<(Map.empty[PropName, Prop])
+    val f = new BaseObj with CallableObj {
+      def props = @*(propsCell)
+      def setProps(newProps: Map[PropName, Prop]) = propsCell @= newProps
 
 //    Set all the internal methods, except for [[Get]], of F as described in 8.12.
 //
@@ -881,12 +862,10 @@ class Interpreter {
 //    Set the [[FormalParameters]] internal property of F to names.
       override def formalParameters = params
 //    Set the [[Code]] internal property of F to FunctionBody.
-      override def code = FunctionCode(f, body, strict)
+      override def code = FunctionCode(this, body, strict)
 //    Set the [[Extensible]] internal property of F to true.
       override def extensible = true
     }
-    f.cell @= fData
-//
 //    Let len be the number of formal parameters specified in FormalParameterList. If no parameters are specified, let len be 0.
 //
 //    Call the [[DefineOwnProperty]] internal method of F with arguments "length", Property Descriptor {[[Value]]: len, [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false}, and false.
@@ -959,7 +938,7 @@ class Interpreter {
         if (!funcAlreadyDeclared) {
           env.createMutableBinding(fn, configurableBindings)
         } else if (!cxt.varEnv.outer.isDefined) {
-          val go = @*(getGlobalObj.cell)
+          val go = getGlobalObj
           val existingProp = go.getProperty(fn).get
           if (existingProp.configurable) {
             val propDesc = PropDesc(value = Some(VUndef), writable = Some(true), enumerable = Some(true), configurable = Some(configurableBindings))
@@ -989,14 +968,14 @@ class Interpreter {
 
     val globalCode = GlobalCode(p.ses)
     val h1 = new Heap()
-    val (h2, globalObjCell) = h1.alloc[ObjData]
-    val globalObj = VObj(globalObjCell)
+    val (h2, globalObjProps) = h1.alloc[Map[PropName,Prop]]
+    val h3 = h2.store(globalObjProps, Map.empty[PropName,Prop])
+    val globalObj = NativeObj(globalObjProps, None)
     val globalEnv = LexEnv(ObjectEnvRec(globalObj), None)
     val progCxt = ExecContext(globalEnv, globalEnv, globalObj, globalCode)
-    val m = Machine(progCxt, h2, globalObj, globalEnv)
+    val m = Machine(progCxt, h3, globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
-      globalObjCell @= new NativeObj(globalObj, @<(Map.empty), None)
       instantiateDeclarationBindings(Nil)
       val evalCompletion = evaluateSourceElements(p.ses)
       MOComp((_: Machine) => evalCompletion)
