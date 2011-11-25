@@ -297,15 +297,35 @@ class Interpreter {
       sealed trait Action
       case object Update extends Action
       case object Reject extends Action
-      case object Leave extends Action
-      
-      // FIXME: Use SameValue(V1, V2) for comparisons, to match spec and to provide more flexibility with comparisons
+      case object Leave extends Action 
+
+      def sameProp(p1: Prop, p2: Prop) = (p1, p2) match {
+        case (dp1: DataProp, dp2: DataProp) => (
+          sameValue(dp1.value, dp2.value) &&
+          dp1.writable == dp2.writable &&
+          dp1.enumerable == dp2.enumerable &&
+          dp1.configurable == dp2.configurable
+        )
+        case (ap1: AccessorProp, ap2: AccessorProp) => (
+          sameValue(ap1.get, ap2.get) &&
+          sameValue(ap1.set, ap2.set) &&
+          ap1.enumerable == ap2.enumerable &&
+          ap1.configurable == ap2.configurable
+        )
+        case _ => false
+      }
+      def sameDataPropExceptValue(dp1: DataProp, dp2: DataProp) = (
+        dp1.writable == dp2.writable &&
+        dp1.enumerable == dp2.enumerable &&
+        dp1.configurable == dp2.configurable
+      )
+
       val action = (currentOpt, proposed) match {
         case (None, _) if extensible => Update
         case (None, _) => Reject
-        case (Some(current), proposed) if (current == proposed) => Leave
+        case (Some(current), proposed) if (sameProp(current, proposed)) => Leave
         case (Some(current), _) if (current.configurable) => Update
-        case (Some(current: DataProp), proposed: DataProp) if (current.writable && current == proposed.copy(value = current.value)) => Update
+        case (Some(current: DataProp), proposed: DataProp) if (current.writable && sameDataPropExceptValue(current, proposed)) => Update
         case _ => Reject
       }
 
@@ -794,6 +814,12 @@ class Interpreter {
       }
       case (abrupt, _) => abrupt
     }
+  }
+
+  // SameValue(X, Y) in spec
+  def sameValue(x: Val, y: Val): Boolean = (x, y) match {
+    case (_: VObj, _: VObj) => x eq y
+    case _ => x == y
   }
 
   def isStrictModeCode(code: Code): Boolean = code match {
