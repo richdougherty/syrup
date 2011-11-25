@@ -89,13 +89,12 @@ class Interpreter {
 
   sealed trait Val extends ValOrRef with ValOrEnvRec
 
-  sealed trait LangVal extends Val
-  case object VUndef extends LangVal
-  case object VNull extends LangVal
-  case class VBool(d: Boolean) extends LangVal
-  case class VStr(d: String) extends LangVal
-  case class VNum(d: Double) extends LangVal
-  case class VObj(cell: Cell[ObjData]) extends LangVal
+  case object VUndef extends Val
+  case object VNull extends Val
+  case class VBool(d: Boolean) extends Val
+  case class VStr(d: String) extends Val
+  case class VNum(d: Double) extends Val
+  case class VObj(cell: Cell[ObjData]) extends Val
 
   sealed trait Typ
   case object TyUndef extends Typ
@@ -123,7 +122,7 @@ class Interpreter {
     def defineOwnProperty(propertyName: String, propDesc: PropDesc, throwError: Boolean): Boolean @cps[MachineOp]
     // Optional methods
     protected def ??? = error("Not implemented")
-    def primitiveVal: LangVal = ???
+    def primitiveVal: Val = ???
     def construct(args: List[Val]): VObj = ???
     def hasInstance(obj: Val): Boolean = ???
     def scope: LexicalEnvironment = ???
