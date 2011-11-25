@@ -109,7 +109,7 @@ class Interpreter {
     def thisVal: VObj
     // Required methods
     def prototype: Option[VObj]
-    def clazz: Val
+    def clazz: String
     def extensible: Boolean
     def get(propertyName: String): Val @cps[MachineOp]
     def getOwnProperty(propertyName: String): Option[Prop] @cps[MachineOp]
@@ -140,7 +140,7 @@ class Interpreter {
   trait BaseObj extends ObjData {
     def thisVal: VObj
     def props: Cell[Map[PropName, Prop]]
-    def clazz: Val = ???
+    def clazz: String = ???
     def extensible: Boolean = true
     def get(propertyName: String): Val @cps[MachineOp] = {
       val desc = getProperty(propertyName)
@@ -330,34 +330,6 @@ class Interpreter {
 
   case class NativeObj(thisVal: VObj, props: Cell[Map[PropName, Prop]], prototype: Option[VObj]) extends BaseObj
 
-  case class NativeFunction(
-      thisVal: VObj,
-      props: Cell[Map[PropName, Prop]],
-      override val code: FunctionCode,
-      override val scope: LexEnv
-      ) extends BaseObj {
-    def prototype: Option[VObj] = None // FIXME: Stub
-    def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = {
-      val strict = isStrictModeCode(code)
-      val thisBinding = if (strict) {
-        thisArg
-      } else if (thisArg == VNull || thisArg == VUndef) {
-        getGlobalObj
-      } else if (typ(thisArg) != TyObj) {
-        toObject(thisArg)
-      } else {
-        thisArg
-      }
-      val localEnv = newDeclarativeEnvironment(Some(scope))
-      val cxt = ExecContext(localEnv, localEnv, thisBinding.asInstanceOf[VObj], code)
-      val parentCxt = currentCxt
-      setCurrentCxt(cxt)
-      instantiateDeclarationBindings(args)
-      moComplete(evaluateSourceElements(code.ses))
-      // FIXME: Proper completion handling
-    }
-  }
-
   type PropName = String
   trait Prop {
     def enumerable: Boolean
@@ -423,6 +395,18 @@ class Interpreter {
       }
     }
     def implicitThisValue: Val = VUndef
+    def createImmutableBinding(name: String): Unit @cps[MachineOp] = {
+      assert(!hasBinding(name))
+      bindings @= @*(bindings).updated(name, ImmutableBinding(@<(None)))
+    }
+    def initializeImmutableBinding(name: String, v: Val): Unit @cps[MachineOp] = {
+      val binding = @*(bindings).get(name)
+      binding match {
+        case None => moVal(assert(false))
+        case Some(ib: ImmutableBinding) => { ib.v @= Some(v) }
+        case Some(_: MutableBinding) => moVal(assert(false))
+      }
+    }
   }
   case class ObjectEnvRec(bindingObj: VObj, provideThis: Boolean = false) extends EnvRec {
     def hasBinding(name: String): Boolean @cps[MachineOp] = {
@@ -447,9 +431,10 @@ class Interpreter {
     }
   }
 
+  // FIXME: Make binding objects immutable, like properties
   sealed trait Binding
   case class MutableBinding(v: Cell[Val], canDelete: Boolean) extends Binding
-  case class ImmutableBinding(v: Val) extends Binding
+  case class ImmutableBinding(v: Cell[Option[Val]]) extends Binding
 
   case class Completion(typ: CompletionType, v: Option[Val], target: Option[String])
   sealed trait CompletionType
@@ -659,6 +644,7 @@ class Interpreter {
     !(isAccessorDescriptor(desc) || isDataDescriptor(desc))
   }
 
+  // FIXME: Make a normal method of EnvRec
   // envRec.GetBindingValue(N, S) in spec
   def getBindingValue(envRec: EnvRec, name: String, strict: Boolean): Val @cps[MachineOp] = envRec match {
     case envRec: DeclarativeEnvRec => {
@@ -666,16 +652,13 @@ class Interpreter {
       assert(bindings.contains(name))
       bindings(name) match {
         case mb: MutableBinding => {
-          val v = @*(mb.v)
-          v match {
-            case VUndef => VUndef // FIXME: Spec doesn't cover this situation. Spec error?
-            case v => v
-          }
+          @*(mb.v)
         }
         case ib: ImmutableBinding => {
-          ib.v match {
-            case VUndef => if (strict) moThrow("ReferenceError") else moVal(VUndef)
-            case v => moVal(v)
+          val v = @*(ib.v)
+          v match {
+            case None => if (strict) moThrow("ReferenceError") else moVal(VUndef)
+            case Some(v) => moVal(v)
           }
         }
       }
@@ -830,7 +813,7 @@ class Interpreter {
   }
   case class GlobalCode(ses: List[SourceElement]) extends Code
   case class EvalCode(ses: List[SourceElement], directStrictCall: Boolean) extends Code
-  case class FunctionCode(func: ObjPtr, ses: List[SourceElement], declaredInStrict: Boolean) extends Code
+  case class FunctionCode(func: VObj, ses: List[SourceElement], strict: Boolean) extends Code
   
   def isStrictModeCode(code: Code): Boolean = code match {
     case GlobalCode(ses) => hasUseStrictDirective(ses)
@@ -842,6 +825,87 @@ class Interpreter {
   def newDeclarativeEnvironment(outer: Option[LexEnv]): LexEnv @cps[MachineOp] = {
     val envRec = DeclarativeEnvRec(@<(Map.empty))
     LexEnv(envRec, outer)
+  }
+
+  // Based on "Function Definition" section in spec
+  def newFunctionObjFromDeclaration(fd: FunctionDeclaration, lexEnv: LexEnv, strict: Boolean): VObj @cps[MachineOp] = {
+    val funcEnv = newDeclarativeEnvironment(Some(lexEnv))
+    val envRec = funcEnv.er.asInstanceOf[DeclarativeEnvRec]
+    envRec.createImmutableBinding(fd.ident)
+    val closure = newFunctionObj(fd.params, fd.body, funcEnv, strict || hasUseStrictDirective(fd.body))
+    envRec.initializeImmutableBinding(fd.ident, closure)
+    closure
+  }
+
+  // Based on "Creating Function Objects" section in spec
+  def newFunctionObj(params: List[String], body: List[SourceElement], lexScope: LexEnv, strict: Boolean): VObj @cps[MachineOp] = {
+//    Create a new native ECMAScript object and let F be that object.
+    val f = VObj(alloc[Cell[ObjData]])
+    val fProps = @<(Map.empty[PropName, Prop])
+    val fData = new BaseObj with CallableObj {
+      def thisVal: VObj = f
+      val props: Cell[Map[PropName, Prop]] = fProps
+
+//    Set all the internal methods, except for [[Get]], of F as described in 8.12.
+//
+//    Set the [[Class]] internal property of F to "Function".
+      override def clazz = "Function"
+//    Set the [[Prototype]] internal property of F to the standard built-in Function prototype object as specified in 15.3.3.1.
+      def prototype: Option[VObj] = None // FIXME: Stub
+//    Set the [[Get]] internal property of F as described in 15.3.5.4.
+//    Set the [[Call]] internal property of F as described in 13.2.1.
+      def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = {
+        val strict = isStrictModeCode(code)
+        val thisBinding = if (strict) {
+          thisArg
+        } else if (thisArg == VNull || thisArg == VUndef) {
+          getGlobalObj
+        } else if (typ(thisArg) != TyObj) {
+          toObject(thisArg)
+        } else {
+          thisArg
+        }
+        val localEnv = newDeclarativeEnvironment(Some(scope))
+        val cxt = ExecContext(localEnv, localEnv, thisBinding.asInstanceOf[VObj], code)
+        val parentCxt = currentCxt
+        setCurrentCxt(cxt)
+        instantiateDeclarationBindings(args)
+        moComplete(evaluateSourceElements(code.ses))
+        // FIXME: Proper completion handling
+      }
+//    Set the [[Construct]] internal property of F as described in 13.2.2.
+//    Set the [[HasInstance]] internal property of F as described in 15.3.5.3.
+//    Set the [[Scope]] internal property of F to the value of Scope.
+      override def scope = lexScope
+//    Let names be a List containing, in left to right textual order, the Strings corresponding to the identifiers of FormalParameterList.
+//    Set the [[FormalParameters]] internal property of F to names.
+      override def formalParameters = params
+//    Set the [[Code]] internal property of F to FunctionBody.
+      override def code = FunctionCode(f, body, strict)
+//    Set the [[Extensible]] internal property of F to true.
+      override def extensible = true
+    }
+    f.cell @= fData
+//
+//    Let len be the number of formal parameters specified in FormalParameterList. If no parameters are specified, let len be 0.
+//
+//    Call the [[DefineOwnProperty]] internal method of F with arguments "length", Property Descriptor {[[Value]]: len, [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false}, and false.
+//
+//    Let proto be the result of creating a new object as would be constructed by the expression new Object()where Object is the standard built-in constructor with that name.
+//
+//    Call the [[DefineOwnProperty]] internal method of proto with arguments "constructor", Property Descriptor {[[Value]]: F, { [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: true}, and false.
+//
+//    Call the [[DefineOwnProperty]] internal method of F with arguments "prototype", Property Descriptor {[[Value]]: proto, { [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: false}, and false.
+//
+//    If Strict is true, then
+//
+//        Let thrower be the [[ThrowTypeError]] function Object (13.2.3).
+//
+//        Call the [[DefineOwnProperty]] internal method of F with arguments "caller", PropertyDescriptor {[[Get]]: thrower, [[Set]]: thrower, [[Enumerable]]: false, [[Configurable]]: false}, and false.
+//
+//        Call the [[DefineOwnProperty]] internal method of F with arguments "arguments", PropertyDescriptor {[[Get]]: thrower, [[Set]]: thrower, [[Enumerable]]: false, [[Configurable]]: false}, and false.
+//
+    f
   }
 
   // GetIdentifierReference(lex, name, strict) in spec
@@ -885,7 +949,7 @@ class Interpreter {
     }
     cpsIterable(cxt.code.ses).cps.foreach {
       case FunctionDeclarationSourceElement(fd@FunctionDeclaration(fn, _, _)) => {
-        val fo = VStr("dummy-function-" + fn) // FIXME: Instantiate function
+        val fo = newFunctionObjFromDeclaration(fd, cxt.lexEnv, strict) // FIXME: Instantiate function
         val funcAlreadyDeclared = env.hasBinding(fn)
         if (!funcAlreadyDeclared) {
           env.createMutableBinding(fn, configurableBindings)
