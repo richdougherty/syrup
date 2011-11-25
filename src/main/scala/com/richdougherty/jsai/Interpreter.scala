@@ -62,6 +62,9 @@ class Interpreter {
     }
   }
 
+  def assertionError(msg: String): Nothing =
+    throw new java.lang.AssertionError(msg)
+
   final case class Cell[A](id: Int)
   final class Heap(cells: Map[Int,Any], nextId: Int) {
     def this() = this(Map.empty, 1)
@@ -385,6 +388,7 @@ class Interpreter {
     def hasBinding(name: String): Boolean @cps[MachineOp]
     def createMutableBinding(name: String, canDelete: Boolean): Unit @cps[MachineOp]
     def setMutableBinding(name: String, v: Val, strict: Boolean): Unit @cps[MachineOp]
+    def getBindingValue(name: String, strict: Boolean): Val @cps[MachineOp]
     def implicitThisValue: Val
   }
   case class DeclarativeEnvRec(bindings: Cell[Map[String, Binding]]) extends EnvRec {
@@ -396,9 +400,25 @@ class Interpreter {
     def setMutableBinding(name: String, v: Val, strict: Boolean) = {
       val binding = @*(bindings).get(name)
       binding match {
-        case None => assert(false)
+        case None => assertionError("Binding missing: " + name)
         case Some(mb: MutableBinding) => { mb.v @= v }
         case Some(_: ImmutableBinding) => moThrow("ReferenceError")
+      }
+    }
+    def getBindingValue(name: String, strict: Boolean): Val @cps[MachineOp] = {
+      val binding = @*(bindings).get(name)
+      binding match {
+        case None => assertionError("Binding missing: " + name)
+        case Some(mb: MutableBinding) => {
+          @*(mb.v)
+        }
+        case Some(ib: ImmutableBinding) => {
+          val v = @*(ib.v)
+          v match {
+            case None => if (strict) moThrow("ReferenceError") else moVal(VUndef)
+            case Some(v) => moVal(v)
+          }
+        }
       }
     }
     def implicitThisValue: Val = VUndef
@@ -432,6 +452,16 @@ class Interpreter {
       val bindings = @*(bindingObj.cell)
       bindings.put(name, v, strict)
       ()
+    }
+    def getBindingValue(name: String, strict: Boolean): Val @cps[MachineOp] = {
+      val bindings = bindingObj
+      val bindingsData = @*(bindings.cell)
+      val value = bindingsData.hasProperty(name)
+      if (!value) {
+        if (!strict) VUndef
+        moThrow("ReferenceError")
+      } else moNop
+      bindingsData.get(name)
     }
     def implicitThisValue: Val = {
       if (provideThis) bindingObj else VUndef
@@ -630,7 +660,7 @@ class Interpreter {
       } else {
         // base must be an environment record
         val baseEnvRec = base.asInstanceOf[EnvRec]
-        getBindingValue(baseEnvRec, getReferencedName(v), isStrictReference(v))
+        baseEnvRec.getBindingValue(getReferencedName(v), isStrictReference(v))
       }
     }
     case v: Val => v
@@ -649,37 +679,6 @@ class Interpreter {
   // IsGenericDescriptor(Desc) in spec
   def isGenericDescriptor(desc: PropDesc): Boolean = {
     !(isAccessorDescriptor(desc) || isDataDescriptor(desc))
-  }
-
-  // FIXME: Make a normal method of EnvRec
-  // envRec.GetBindingValue(N, S) in spec
-  def getBindingValue(envRec: EnvRec, name: String, strict: Boolean): Val @cps[MachineOp] = envRec match {
-    case envRec: DeclarativeEnvRec => {
-      val bindings = @*(envRec.bindings)
-      assert(bindings.contains(name))
-      bindings(name) match {
-        case mb: MutableBinding => {
-          @*(mb.v)
-        }
-        case ib: ImmutableBinding => {
-          val v = @*(ib.v)
-          v match {
-            case None => if (strict) moThrow("ReferenceError") else moVal(VUndef)
-            case Some(v) => moVal(v)
-          }
-        }
-      }
-    }
-    case envRec: ObjectEnvRec => {
-      val bindings = envRec.bindingObj
-      val bindingsData = @*(bindings.cell)
-      val value = bindingsData.hasProperty(name)
-      if (!value) {
-        if (!strict) VUndef
-        moThrow("ReferenceError")
-      } else moNop
-      bindingsData.get(name)
-    }
   }
 
   // ToPrimitive(V) in spec
