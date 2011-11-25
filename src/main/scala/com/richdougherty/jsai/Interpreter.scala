@@ -125,7 +125,7 @@ class Interpreter {
     def primitiveVal: Val = ???
     def construct(args: List[Val]): VObj = ???
     def hasInstance(obj: Val): Boolean = ???
-    def scope: LexicalEnvironment = ???
+    def scope: LexEnv = ???
     def formalParameters: List[String] = ???
     def code: FunctionCode = ???
     def targetFunction: VObj = ???
@@ -169,7 +169,7 @@ class Interpreter {
           protoOption match {
             case None => moVal(None)
             case Some(proto) => {
-              val protoData = ^(proto.cell)
+              val protoData = @*(proto.cell)
               protoData.getProperty(propertyName)
             }
           }
@@ -334,7 +334,7 @@ class Interpreter {
       thisVal: VObj,
       props: Cell[Map[PropName, Prop]],
       override val code: FunctionCode,
-      override val scope: LexicalEnvironment
+      override val scope: LexEnv
       ) extends BaseObj {
     def prototype: Option[VObj] = None // FIXME: Stub
     def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = {
@@ -349,7 +349,7 @@ class Interpreter {
         thisArg
       }
       val localEnv = newDeclarativeEnvironment(Some(scope))
-      val cxt = ExecutionContext(localEnv, localEnv, thisBinding.asInstanceOf[VObj], code)
+      val cxt = ExecContext(localEnv, localEnv, thisBinding.asInstanceOf[VObj], code)
       val parentCxt = currentCxt
       setCurrentCxt(cxt)
       instantiateDeclarationBindings(args)
@@ -395,21 +395,21 @@ class Interpreter {
     assert(!(isDataDescriptor(this) && isAccessorDescriptor(this)))
   }
 
-  case class Machine(cxt: ExecutionContext, heap: Heap, globalObj: VObj, globalEnv: LexicalEnvironment)
-  case class ExecutionContext(varEnv: LexicalEnvironment, lexEnv: LexicalEnvironment, thisBinding: VObj, code: Code)
+  case class Machine(cxt: ExecContext, heap: Heap, globalObj: VObj, globalEnv: LexEnv)
+  case class ExecContext(varEnv: LexEnv, lexEnv: LexEnv, thisBinding: VObj, code: Code)
 
-  case class LexicalEnvironment(er: EnvironmentRecord, outer: Option[LexicalEnvironment])
+  case class LexEnv(er: EnvRec, outer: Option[LexEnv])
 
   sealed trait ValOrEnvRec
   // FIXME: Rename to EnvRec
-  sealed trait EnvironmentRecord extends ValOrEnvRec {
+  sealed trait EnvRec extends ValOrEnvRec {
     def hasBinding(name: String): Boolean @cps[MachineOp]
     def createMutableBinding(name: String, canDelete: Boolean): Unit @cps[MachineOp]
     def setMutableBinding(name: String, v: Val, strict: Boolean): Unit @cps[MachineOp]
     def implicitThisValue: Val
   }
-  case class DeclarativeEnvironmentRecord(bindings: Cell[Map[String, Binding]]) extends EnvironmentRecord {
-    def hasBinding(name: String) = ^(bindings).contains(name)
+  case class DeclarativeEnvRec(bindings: Cell[Map[String, Binding]]) extends EnvRec {
+    def hasBinding(name: String) = @*(bindings).contains(name)
     def createMutableBinding(name: String, canDelete: Boolean) = {
       assert(!hasBinding(name))
       bindings @= @*(bindings).updated(name, MutableBinding(@<(VUndef), canDelete))
@@ -424,9 +424,9 @@ class Interpreter {
     }
     def implicitThisValue: Val = VUndef
   }
-  case class ObjectEnvironmentRecord(bindingObj: VObj, provideThis: Boolean = false) extends EnvironmentRecord {
+  case class ObjectEnvRec(bindingObj: VObj, provideThis: Boolean = false) extends EnvRec {
     def hasBinding(name: String): Boolean @cps[MachineOp] = {
-      val bindingObjData = ^(bindingObj.cell)
+      val bindingObjData = @*(bindingObj.cell)
       bindingObjData.hasProperty(name)
     }
     def createMutableBinding(name: String, canDelete: Boolean) = {
@@ -524,8 +524,6 @@ class Interpreter {
     k(m.heap.load(cell)) // FIXME: Handle missing object.
   }
 
-  def ^[A](cell: Cell[A]) = @*(cell) // FIXME: Remove this method
-
   def store[A](cell: Cell[A], a: A) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
     (m.copy(heap = m.heap.store(cell, a)), k(()))
   }
@@ -538,11 +536,11 @@ class Interpreter {
     def @=(a: A) = store[A](cell, a)
   }
 
-  def currentCxt = moAccess[ExecutionContext] {(m: Machine, k: ExecutionContext => MachineOp) =>
+  def currentCxt = moAccess[ExecContext] {(m: Machine, k: ExecContext => MachineOp) =>
     k(m.cxt)
   }
 
-  def setCurrentCxt(cxt: ExecutionContext) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
+  def setCurrentCxt(cxt: ExecContext) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
     (m.copy(cxt = cxt), k(()))
   }
 
@@ -550,7 +548,7 @@ class Interpreter {
     k(m.globalObj)
   }
 
-  def getGlobalEnv = moAccess[LexicalEnvironment] {(m: Machine, k: LexicalEnvironment => MachineOp) =>
+  def getGlobalEnv = moAccess[LexEnv] {(m: Machine, k: LexEnv => MachineOp) =>
     k(m.globalEnv)
   }
 
@@ -616,11 +614,11 @@ class Interpreter {
       if (isUnresolvableReference(v)) moThrow("ReferenceError") else moNop
       if (isPropertyReference(v)) {
         if (!hasPrimitiveBase(v)) {
-          val baseData = ^(base.asInstanceOf[VObj].cell)
+          val baseData = @*(base.asInstanceOf[VObj].cell)
           baseData.get(getReferencedName(v))
         } else {
           val o = toObject(base.asInstanceOf[Val])
-          val odata = ^(o.cell)
+          val odata = @*(o.cell)
           val descOption = odata.getProperty(getReferencedName(v))
           descOption match {
             case None => VUndef
@@ -630,7 +628,7 @@ class Interpreter {
               if (getter == VUndef) {
                 moVal(VUndef)
               } else {
-                val getterData = ^(base.asInstanceOf[VObj].cell)
+                val getterData = @*(base.asInstanceOf[VObj].cell)
                 getterData.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], Nil).asInstanceOf[Val]
                 // FIXME: Should spec throw a TypeError if getter returns a reference - or call recursively?
               }
@@ -639,7 +637,7 @@ class Interpreter {
         }
       } else {
         // base must be an environment record
-        val baseEnvRec = base.asInstanceOf[EnvironmentRecord]
+        val baseEnvRec = base.asInstanceOf[EnvRec]
         getBindingValue(baseEnvRec, getReferencedName(v), isStrictReference(v))
       }
     }
@@ -662,8 +660,8 @@ class Interpreter {
   }
 
   // envRec.GetBindingValue(N, S) in spec
-  def getBindingValue(envRec: EnvironmentRecord, name: String, strict: Boolean): Val @cps[MachineOp] = envRec match {
-    case envRec: DeclarativeEnvironmentRecord => {
+  def getBindingValue(envRec: EnvRec, name: String, strict: Boolean): Val @cps[MachineOp] = envRec match {
+    case envRec: DeclarativeEnvRec => {
       val bindings = @*(envRec.bindings)
       assert(bindings.contains(name))
       bindings(name) match {
@@ -682,9 +680,9 @@ class Interpreter {
         }
       }
     }
-    case envRec: ObjectEnvironmentRecord => {
+    case envRec: ObjectEnvRec => {
       val bindings = envRec.bindingObj
-      val bindingsData = ^(bindings.cell)
+      val bindingsData = @*(bindings.cell)
       val value = bindingsData.hasProperty(name)
       if (!value) {
         if (!strict) VUndef
@@ -721,7 +719,7 @@ class Interpreter {
 
   def isCallable(v: Val): Boolean @cps[MachineOp] = v match {
     case o: VObj => {
-      val objData = ^(o.cell)
+      val objData = @*(o.cell)
       objData.isInstanceOf[CallableObj]
     }
     case _ => false
@@ -774,7 +772,7 @@ class Interpreter {
             getBase(ref).asInstanceOf[Val] // Either VObj, VNum, VStr, VBool
 //            Let thisValue be GetBase(ref).
           } else {
-            val envRec = getBase(ref.asInstanceOf[Ref]).asInstanceOf[EnvironmentRecord]
+            val envRec = getBase(ref.asInstanceOf[Ref]).asInstanceOf[EnvRec]
 //        Else, the base of ref is an Environment Record
             envRec.implicitThisValue
 //            Let thisValue be the result of calling the ImplicitThisValue concrete method of GetBase(ref).
@@ -786,7 +784,7 @@ class Interpreter {
 //        Let thisValue be undefined.
         }
       }
-      val funcData = ^(func.asInstanceOf[VObj].cell)
+      val funcData = @*(func.asInstanceOf[VObj].cell)
       funcData.asInstanceOf[CallableObj].call(thisValue, argList)
 //    Return the result of calling the [[Call]] internal method on func, providing thisValue as the this value and providing the list argList as the argument values.
 //The production CallExpression : CallExpression Arguments is evaluated in exactly the same manner, except that the contained CallExpression is evaluated in step 1.
@@ -841,13 +839,13 @@ class Interpreter {
   }
 
   // NewDeclarativeEnvironment(E) in spec
-  def newDeclarativeEnvironment(outer: Option[LexicalEnvironment]): LexicalEnvironment @cps[MachineOp] = {
-    val envRec = DeclarativeEnvironmentRecord(@<(Map.empty))
-    LexicalEnvironment(envRec, outer)
+  def newDeclarativeEnvironment(outer: Option[LexEnv]): LexEnv @cps[MachineOp] = {
+    val envRec = DeclarativeEnvRec(@<(Map.empty))
+    LexEnv(envRec, outer)
   }
 
   // GetIdentifierReference(lex, name, strict) in spec
-  def getIdentifierReference(lex: Option[LexicalEnvironment], name: String, strict: Boolean): Ref @cps[MachineOp] = {
+  def getIdentifierReference(lex: Option[LexEnv], name: String, strict: Boolean): Ref @cps[MachineOp] = {
     lex match {
       case None => Ref(VUndef, name, strict)
       case Some(lex) => {
@@ -924,8 +922,8 @@ class Interpreter {
     val h1 = new Heap()
     val (h2, globalObjCell) = h1.alloc[ObjData]
     val globalObj = VObj(globalObjCell)
-    val globalEnv = LexicalEnvironment(ObjectEnvironmentRecord(globalObj), None)
-    val progCxt = ExecutionContext(globalEnv, globalEnv, globalObj, globalCode)
+    val globalEnv = LexEnv(ObjectEnvRec(globalObj), None)
+    val progCxt = ExecContext(globalEnv, globalEnv, globalObj, globalCode)
     val m = Machine(progCxt, h2, globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
