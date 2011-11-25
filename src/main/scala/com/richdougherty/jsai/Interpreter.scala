@@ -380,7 +380,6 @@ class Interpreter {
   case class LexEnv(er: EnvRec, outer: Option[LexEnv])
 
   sealed trait ValOrEnvRec
-  // FIXME: Rename to EnvRec
   sealed trait EnvRec extends ValOrEnvRec {
     def hasBinding(name: String): Boolean @cps[MachineOp]
     def createMutableBinding(name: String, canDelete: Boolean): Unit @cps[MachineOp]
