@@ -925,6 +925,7 @@ class Interpreter {
     }
   }
 
+  // Based on "Declaration Binding Instantiation" section in spec
   def instantiateDeclarationBindings(args: List[Val]): Unit @cps[MachineOp] = {
     var cxt = currentCxt
     val env = cxt.varEnv.er
@@ -935,17 +936,21 @@ class Interpreter {
     val strict = isStrictModeCode(cxt.code)
     cxt.code match {
       case FunctionCode(func, _, _) => {
-        error("Not implemented")
-//        val names = Nil.asInstanceOf[List[String]] //getInternalProperty(func, "[[FormalParameters]]")
-//        val argCount = args.length
-//        for ((argName, n) <- names.zipWithIndex) {
-//          val v = if (n > argCount) VUndef else args(n)
-//          val argAlreadyDeclared = hasBinding(env, argName)
-//          if (!argAlreadyDeclared) createMutableBinding(env, argName)
-//          setMutableBinding(env, v, strict)
-//        }
+        val names = Nil.asInstanceOf[List[String]] //getInternalProperty(func, "[[FormalParameters]]")
+        val argCount = args.length
+        cpsIterable(names).cps.foreach { (argName: String) =>
+          moVal((): Any)
+        }
+        var n = 0 // Manually increment because zipWithIndex didn't play with cps
+        for (argName <- names.cps) {
+          n += 1
+          val v = if (n > argCount) VUndef else args(n)
+          val argAlreadyDeclared = env.hasBinding(argName)
+          if (!argAlreadyDeclared) env.createMutableBinding(argName, false) else moNop // FIXME: Spec doesn't specify value of canDelete
+          env.setMutableBinding(argName, v, strict)
+        }
       }
-      case _ => ()
+      case _ => moVal(())
     }
     cpsIterable(cxt.code.ses).cps.foreach {
       case FunctionDeclarationSourceElement(fd@FunctionDeclaration(fn, _, _)) => {
