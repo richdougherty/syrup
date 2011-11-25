@@ -306,6 +306,7 @@ class Interpreter {
       case object Reject extends Action
       case object Leave extends Action
       
+      // FIXME: Use SameValue(V1, V2) for comparisons, to match spec and to provide more flexibility with comparisons
       val action = (currentOpt, proposed) match {
         case (None, _) if extensible => Update
         case (None, _) => Reject
