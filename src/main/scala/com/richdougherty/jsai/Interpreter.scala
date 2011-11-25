@@ -85,9 +85,9 @@ class Interpreter {
   }
 
   sealed trait ValOrRef
-  case class Ref(base: Val, refName: String, strictRef: Boolean) extends ValOrRef
+  case class Ref(base: ValOrEnvRec, refName: String, strictRef: Boolean) extends ValOrRef
 
-  sealed trait Val extends ValOrRef
+  sealed trait Val extends ValOrRef with ValOrEnvRec
 
   sealed trait LangVal extends Val
   case object VUndef extends LangVal
@@ -97,8 +97,6 @@ class Interpreter {
   case class VNum(d: Double) extends LangVal
   case class VObj(cell: Cell[ObjData]) extends LangVal
 
-  sealed trait SpecVal extends Val
-  
   sealed trait Typ
   case object TyUndef extends Typ
   case object TyNull extends Typ
@@ -106,8 +104,6 @@ class Interpreter {
   case object TyStr extends Typ
   case object TyNum extends Typ
   case object TyObj extends Typ
-  case object TyRef extends Typ
-  case object TyEnvRec extends Typ
 
   type ObjPtr = Int
   trait ObjData {
@@ -405,7 +401,9 @@ class Interpreter {
 
   case class LexicalEnvironment(er: EnvironmentRecord, outer: Option[LexicalEnvironment])
 
-  sealed trait EnvironmentRecord extends SpecVal {
+  sealed trait ValOrEnvRec
+  // FIXME: Rename to EnvRec
+  sealed trait EnvironmentRecord extends ValOrEnvRec {
     def hasBinding(name: String): Boolean @cps[MachineOp]
     def createMutableBinding(name: String, canDelete: Boolean): Unit @cps[MachineOp]
     def setMutableBinding(name: String, v: Val, strict: Boolean): Unit @cps[MachineOp]
@@ -584,11 +582,10 @@ class Interpreter {
     case _: VStr => TyStr
     case _: VNum => TyNum
     case _: VObj => TyObj
-    case _: EnvironmentRecord => TyEnvRec
   }
 
   // GetBase(V) in spec
-  def getBase(v: Ref): Val = v.base
+  def getBase(v: Ref): ValOrEnvRec = v.base
 
   // IsUnresolvableReference(V) in spec
   def isUnresolvableReference(v: Ref): Boolean = (v.base == VUndef)
@@ -623,7 +620,7 @@ class Interpreter {
           val baseData = ^(base.asInstanceOf[VObj].cell)
           baseData.get(getReferencedName(v))
         } else {
-          val o = toObject(base)
+          val o = toObject(base.asInstanceOf[Val])
           val odata = ^(o.cell)
           val descOption = odata.getProperty(getReferencedName(v))
           descOption match {
@@ -773,9 +770,9 @@ class Interpreter {
       val thisValue = ref match {
         case ref: Ref => {
 //    If Type(ref) is Reference, then
-          if (isPropertyReference(ref.asInstanceOf[Ref])) {
+          if (isPropertyReference(ref)) {
 //        If IsPropertyReference(ref) is true, then
-            getBase(ref.asInstanceOf[Ref])
+            getBase(ref).asInstanceOf[Val] // Either VObj, VNum, VStr, VBool
 //            Let thisValue be GetBase(ref).
           } else {
             val envRec = getBase(ref.asInstanceOf[Ref]).asInstanceOf[EnvironmentRecord]
