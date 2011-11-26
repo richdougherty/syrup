@@ -53,7 +53,7 @@ object Parser {
       case fn: ast.FunctionNode => {
         FunctionDeclarationSourceElement(FunctionDeclaration(
             fn.getFunctionName().getIdentifier(),
-            (for (child <- fn.getParams()) yield unimplementedTransform[String](child)).toList,
+            (for (child <- fn.getParams()) yield child.asInstanceOf[ast.Name].getIdentifier()).toList,
             (for (child <- fn.getBody()) yield transformSourceElement(child)).toList
         ))
       }
@@ -74,6 +74,7 @@ object Parser {
         transformMemberExpression(fc.getTarget()),
         (for (arg <- fc.getArguments()) yield transformExpression(arg)).toList
       )
+      case n: ast.Name => Identifier(n.getIdentifier())
       case _ => unimplementedTransform[Expression](node)
     }
   }

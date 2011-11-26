@@ -9,10 +9,10 @@ object App {
   
   def main(args : Array[String]) {
     val source = """
-      function hello() {
-        return 'Hello '+'world.'
+      function hello(name) {
+        return 'Hello '+name+'.'
       }
-      hello();
+      hello('world');
       """
 
     // See:

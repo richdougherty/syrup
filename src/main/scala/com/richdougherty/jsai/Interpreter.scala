@@ -980,18 +980,15 @@ class Interpreter {
     val strict = isStrictModeCode(cxt.code)
     cxt.code match {
       case FunctionCode(func, _, _) => {
-        val names = Nil.asInstanceOf[List[String]] //getInternalProperty(func, "[[FormalParameters]]")
+        val names = func.formalParameters
         val argCount = args.length
-        cpsIterable(names).cps.foreach { (argName: String) =>
-          moVal((): Any)
-        }
         var n = 0 // Manually increment because zipWithIndex didn't play with cps
         for (argName <- names.cps) {
-          n += 1
           val v = if (n > argCount) VUndef else args(n)
           val argAlreadyDeclared = env.hasBinding(argName)
           if (!argAlreadyDeclared) env.createMutableBinding(argName, false) else moNop // FIXME: Spec doesn't specify value of canDelete
           env.setMutableBinding(argName, v, strict)
+          n += 1
         }
       }
       case _ => moVal(())
