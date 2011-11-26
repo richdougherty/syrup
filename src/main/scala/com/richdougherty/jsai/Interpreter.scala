@@ -911,30 +911,17 @@ class Interpreter {
         val parentCxt = currentCxt
         setCurrentCxt(cxt)
         instantiateDeclarationBindings(args)
-        shift((k: ValOrRef => MachineOp) => MOUpdate((m: Machine) => {
-          val parentCompletionHandler = m.ch
-          val handleFunctionCompletion: CompletionHandler = { (m: Machine, c: Completion) =>
-            val m1 = m.copy(cxt = parentCxt, ch = parentCompletionHandler)
-            val mo = c match {
-              case Completion(CNormal, _, None) => k(VUndef)
-              case Completion(CBreak | CContinue, _, _) =>
-                MOComp((_: Machine) => Completion(CThrow, Some(VStr("SyntaxError")), None))
-              case Completion(CReturn, None, None) => k(VUndef)
-              case Completion(CReturn, Some(v), None) => k(v)
-              case Completion(CThrow, _, _) => MOComp((_: Machine) => c)
-            }
-            (m1, mo)
-          }
-          val mo = reset {
-            setCurrentCompletionHandler(Some(handleFunctionCompletion))
-            val c = evaluateSourceElements(code.ses)
-            shift((k2: ValOrRef => MachineOp) => MOUpdate((m: Machine) => {
-              handleFunctionCompletion(m, c)
-            }))
-            MOComp((_: Machine) => Completion(CThrow, Some(VStr("RuntimeError")), None))
-          }
-          (m, mo)
-        }))
+        
+        val c = completionOf(evaluateSourceElements(code.ses))
+        setCurrentCxt(parentCxt)
+        c match {
+          case Completion(CNormal, _, None) => moVal(VUndef)
+          case Completion(CBreak | CContinue, _, _) =>
+            assertionError("Illegal completion for function: " + c)
+          case Completion(CReturn, None, None) => moVal(VUndef)
+          case Completion(CReturn, Some(v), None) => moVal(v)
+          case Completion(CThrow, _, _) => moComplete(c)
+        }
       }
 //    Set the [[Construct]] internal property of F as described in 13.2.2.
 //    Set the [[HasInstance]] internal property of F as described in 15.3.5.3.
