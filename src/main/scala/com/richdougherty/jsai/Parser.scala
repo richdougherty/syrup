@@ -23,6 +23,7 @@ object Parser {
   sealed trait Expression
   case class InfixExpression(l: Expression, op: Operator, r: Expression) extends Expression
   sealed trait LiteralExpression extends Expression
+  case class NumericLiteral(d: Double) extends LiteralExpression
   case class StringLiteral(d: String) extends LiteralExpression
   sealed trait MemberExpression extends Expression
   sealed trait PrimaryExpression extends MemberExpression
@@ -69,6 +70,7 @@ object Parser {
     node match {
       case infixExpression: ast.InfixExpression =>
         InfixExpression(transformExpression(infixExpression.getLeft()), transformOperator(infixExpression.getOperator()), transformExpression(infixExpression.getRight()))
+      case nl: ast.NumberLiteral => NumericLiteral(nl.getNumber())
       case sl: ast.StringLiteral => StringLiteral(sl.getValue())
       case fc: ast.FunctionCall => CallExpression(
         transformMemberExpression(fc.getTarget()),

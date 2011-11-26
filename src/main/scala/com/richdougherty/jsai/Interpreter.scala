@@ -13,6 +13,7 @@ import Parser.Identifier
 import Parser.FunctionDeclaration
 import Parser.FunctionDeclarationSourceElement
 import Parser.InfixExpression
+import Parser.NumericLiteral
 import Parser.ReturnStatement
 import Parser.SourceElement
 import Parser.StatementSourceElement
@@ -771,6 +772,7 @@ class Interpreter {
         }
       }
     }
+    case NumericLiteral(d) => VNum(d)
     case StringLiteral(s) => VStr(s)
     case CallExpression(target, args) => {
 //    Let ref be the result of evaluating MemberExpression.

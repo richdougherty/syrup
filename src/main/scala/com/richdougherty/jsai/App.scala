@@ -8,7 +8,7 @@ import org.mozilla.javascript.Context
 object App {
   
   def main(args : Array[String]) {
-    test("'Hello world.'")
+    test("'Hello world.';")
     test("""
       function hello() {
         return 'Hello world.'
@@ -21,6 +21,7 @@ object App {
       }
       hello('world');
     """)
+    test("123;")
   }
 
   def test(source: String): Unit = {
