@@ -535,6 +535,19 @@ class Interpreter {
     MOComp((_: Machine) => c) // FIXME: Look up actual value.
   })
 
+  def completionOf(thunk: => Nothing @cps[MachineOp]): Completion @cps[MachineOp] = {
+    shift((k: Completion => MachineOp) => MOUpdate((m: Machine) => {
+      val parentCompletionHandler = m.ch
+      val completionHandler: CompletionHandler = (m: Machine, c: Completion) => {
+        val m1 = m.copy(ch = parentCompletionHandler)
+        (m1, k(c))
+      }
+      val m1 = m.copy(ch = Some(completionHandler))
+      val mo = reset[Nothing,MachineOp](thunk)
+      (m1, mo)
+    }))
+  }
+
   def moThrow(errorType: String): Nothing @cps[MachineOp] = {
     // FIXME: Create a proper error object
     val error = VStr(errorType + ": " + (new RuntimeException(errorType)).getStackTraceString)
@@ -806,32 +819,36 @@ class Interpreter {
     }
   }
 
-  def evaluateSourceElement(se: SourceElement): Completion @cps[MachineOp] = se match {
-    case StatementSourceElement(st) => st match {
-      case ExpressionStatement(expr) => {
-        val exprRef = evaluateExpression(expr)
-        Completion(CNormal, Some(getValue(exprRef)), None)
-      }
-      case ReturnStatement(expr) => expr match {
-        case None => Completion(CReturn, None, None)
-        case Some(expr0) => {
-          val exprRef = evaluateExpression(expr0)
-          Completion(CReturn, Some(getValue(exprRef)), None)
+  def evaluateSourceElement(se: SourceElement): Nothing @cps[MachineOp] = {
+    val c = se match {
+      case StatementSourceElement(st) => st match {
+        case ExpressionStatement(expr) => {
+          val exprRef = evaluateExpression(expr)
+          Completion(CNormal, Some(getValue(exprRef)), None)
+        }
+        case ReturnStatement(expr) => expr match {
+          case None => Completion(CReturn, None, None)
+          case Some(expr0) => {
+            val exprRef = evaluateExpression(expr0)
+            Completion(CReturn, Some(getValue(exprRef)), None)
+          }
         }
       }
+      case FunctionDeclarationSourceElement(_) =>
+        Completion(CNormal, None, None)
     }
-    case FunctionDeclarationSourceElement(_) =>
-      Completion(CNormal, None, None)
+    moComplete(c)
   }
 
-  def evaluateSourceElements(ses: List[SourceElement]): Completion @cps[MachineOp] = {
-    ses.cps.foldLeft(Completion(CNormal, None, None)) {
+  def evaluateSourceElements(ses: List[SourceElement]): Nothing @cps[MachineOp] = {
+    val c = ses.cps.foldLeft(Completion(CNormal, None, None)) {
       case (Completion(CNormal, prevVal, prevTarget), se) => {
-        val currCompletion = evaluateSourceElement(se)
+        val currCompletion = completionOf(evaluateSourceElement(se))
         if (currCompletion.v.isDefined) currCompletion else currCompletion.copy(v = prevVal)
       }
       case (abrupt, _) => abrupt
     }
+    moComplete(c)
   }
 
   // SameValue(X, Y) in spec
