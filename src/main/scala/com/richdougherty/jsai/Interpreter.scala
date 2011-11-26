@@ -387,8 +387,9 @@ class Interpreter {
     assert(!(isDataDescriptor(this) && isAccessorDescriptor(this)))
   }
 
-  case class Machine(cxt: ExecContext, heap: Heap, globalObj: VObj, globalEnv: LexEnv)
+  case class Machine(cxt: ExecContext, ch: Option[CompletionHandler], heap: Heap, globalObj: VObj, globalEnv: LexEnv)
   case class ExecContext(varEnv: LexEnv, lexEnv: LexEnv, thisBinding: VObj, code: Code)
+  type CompletionHandler = (Machine, Completion) => (Machine, MachineOp)
 
   sealed trait Code {
     def ses: List[SourceElement]
@@ -510,7 +511,16 @@ class Interpreter {
       val (m1, mo1) = thunk(m)
       runMachineOp(m1, mo1)
     }
-    case MOComp(thunk) => (m, thunk(m))
+    case MOComp(thunk) => {
+      m.ch match {
+        case None => (m, thunk(m))
+        case Some(handler) => {
+          val c = thunk(m)
+          val (m1, mo) = handler(m, c)
+          runMachineOp(m1, mo)
+        }
+      }
+    }
   }
   
   def moAccess[A](access: ((Machine, (A => MachineOp)) => MachineOp)): A @cps[MachineOp] = {
@@ -573,6 +583,14 @@ class Interpreter {
 
   def setCurrentCxt(cxt: ExecContext) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
     (m.copy(cxt = cxt), k(()))
+  }
+
+  def currentCompletionHandler = moAccess[Option[CompletionHandler]] {(m: Machine, k: Option[CompletionHandler] => MachineOp) =>
+    k(m.ch)
+  }
+
+  def setCurrentCompletionHandler(ch: Option[CompletionHandler]) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
+    (m.copy(ch = ch), k(()))
   }
 
   def getGlobalObj = moAccess[VObj] {(m: Machine, k: VObj => MachineOp) =>
@@ -876,8 +894,30 @@ class Interpreter {
         val parentCxt = currentCxt
         setCurrentCxt(cxt)
         instantiateDeclarationBindings(args)
-        moComplete(evaluateSourceElements(code.ses))
-        // FIXME: Proper completion handling
+        shift((k: ValOrRef => MachineOp) => MOUpdate((m: Machine) => {
+          val parentCompletionHandler = m.ch
+          val handleFunctionCompletion: CompletionHandler = { (m: Machine, c: Completion) =>
+            val m1 = m.copy(cxt = parentCxt, ch = parentCompletionHandler)
+            val mo = c match {
+              case Completion(CNormal, _, None) => k(VUndef)
+              case Completion(CBreak | CContinue, _, _) =>
+                MOComp((_: Machine) => Completion(CThrow, Some(VStr("SyntaxError")), None))
+              case Completion(CReturn, None, None) => k(VUndef)
+              case Completion(CReturn, Some(v), None) => k(v)
+              case Completion(CThrow, _, _) => MOComp((_: Machine) => c)
+            }
+            (m1, mo)
+          }
+          val mo = reset {
+            setCurrentCompletionHandler(Some(handleFunctionCompletion))
+            val c = evaluateSourceElements(code.ses)
+            shift((k2: ValOrRef => MachineOp) => MOUpdate((m: Machine) => {
+              handleFunctionCompletion(m, c)
+            }))
+            MOComp((_: Machine) => Completion(CThrow, Some(VStr("RuntimeError")), None))
+          }
+          (m, mo)
+        }))
       }
 //    Set the [[Construct]] internal property of F as described in 13.2.2.
 //    Set the [[HasInstance]] internal property of F as described in 15.3.5.3.
@@ -998,7 +1038,7 @@ class Interpreter {
     val globalObj = NativeObj(globalObjProps, None)
     val globalEnv = LexEnv(ObjectEnvRec(globalObj), None)
     val progCxt = ExecContext(globalEnv, globalEnv, globalObj, globalCode)
-    val m = Machine(progCxt, h3, globalObj, globalEnv)
+    val m = Machine(progCxt, None, h3, globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
       instantiateDeclarationBindings(Nil)
