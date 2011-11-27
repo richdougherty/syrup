@@ -18,6 +18,8 @@ import Parser.ReturnStatement
 import Parser.SourceElement
 import Parser.StatementSourceElement
 import Parser.StringLiteral
+import Parser.VariableDeclaration
+import Parser.VariableStatement
 
 class Interpreter {
   
@@ -67,7 +69,7 @@ class Interpreter {
     throw new java.lang.AssertionError(msg)
 
   final case class Cell[A](id: Int)
-  final class Heap(cells: Map[Int,Any], nextId: Int) {
+  final case class Heap(cells: Map[Int,Any], nextId: Int) {
     def this() = this(Map.empty, 1)
     def alloc[A]: (Heap, Cell[A]) =
       (new Heap(cells, nextId + 1), Cell[A](nextId))
@@ -704,6 +706,54 @@ class Interpreter {
     case v: Val => v
   }
 
+  // PutValue(V, W) in spec
+  def putValue(v: ValOrRef, w: Val): Unit @cps[MachineOp] = v match {
+    case v: Ref => {
+      val base = getBase(v)
+      if (isUnresolvableReference(v)) {
+        if (isStrictReference(v)) moThrow("ReferenceError") else moNop
+        val go = getGlobalObj
+        go.put(getReferencedName(v), w, false)
+      } else if (isPropertyReference(v)) {
+        if (!hasPrimitiveBase(v)) {
+          base.asInstanceOf[VObj].put(getReferencedName(v), w, isStrictReference(v))
+        } else {
+          val p = getReferencedName(v)
+          val throwError = isStrictReference(v)
+          val o = toObject(base.asInstanceOf[Val])
+          if (!o.canPut(p)) {
+            if (throwError) moThrow("TypeError") else moNop
+          } else {
+            val ownDescOption = o.getOwnProperty(p)
+            ownDescOption match {
+              case Some(desc: DataProp) => if (throwError) moThrow("TypeError") else moNop
+              case _ => {
+                val descOption = o.getOwnProperty(p)
+                descOption match {
+                  case Some(desc: AccessorProp) => {
+                    val setter = desc.set
+                    if (setter == VUndef) {
+                      moVal(assertionError("Setter cannot be undefined"))
+                    } else {
+                      setter.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], w::Nil)
+                      // FIXME: Should spec throw a TypeError if setter returns a reference - or call getValue()?
+                      ()
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } else {
+        // base must be an environment record
+        val baseEnvRec = base.asInstanceOf[EnvRec]
+        baseEnvRec.setMutableBinding(getReferencedName(v), w, isStrictReference(v))
+      }
+    }
+    case _ => moThrow("ReferenceError")
+  }
+
   // IsAccessorDescriptor(Desc) in spec
   def isAccessorDescriptor(desc: PropDesc): Boolean = {
     desc.get.isDefined || desc.set.isDefined
@@ -747,6 +797,17 @@ class Interpreter {
   def isCallable(v: Val): Boolean @cps[MachineOp] = v match {
     case o: VObj => o.isInstanceOf[CallableObj]
     case _ => false
+  }
+
+  def evaluateVariableDeclaration(decl: VariableDeclaration): String @cps[MachineOp] = decl match {
+    case VariableDeclaration(ident, None) => ident
+    case VariableDeclaration(ident, Some(initialiser)) => {
+      val lhs = evaluateExpression(Identifier(ident))
+      val rhs = evaluateExpression(initialiser)
+      val value = getValue(rhs)
+      putValue(lhs, value)
+      ident
+    }
   }
 
   def evaluateExpression(expr: Expression): ValOrRef @cps[MachineOp] = expr match {
@@ -824,6 +885,12 @@ class Interpreter {
   def evaluateSourceElement(se: SourceElement): Nothing @cps[MachineOp] = {
     val c = se match {
       case StatementSourceElement(st) => st match {
+        case VariableStatement(decls) => {
+          for (decl <- decls.cps) {
+            evaluateVariableDeclaration(decl)
+          }
+          Completion(CNormal, None, None)
+        }
         case ExpressionStatement(expr) => {
           val exprRef = evaluateExpression(expr)
           Completion(CNormal, Some(getValue(exprRef)), None)

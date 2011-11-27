@@ -15,10 +15,13 @@ object Parser {
   case class FunctionDeclarationSourceElement(functionDeclaration: FunctionDeclaration) extends SourceElement
 
   sealed trait Statement
+  case class VariableStatement(decls: List[VariableDeclaration]) extends Statement
   case class ExpressionStatement(e: Expression) extends Statement
   case class ReturnStatement(expr: Option[Expression]) extends Statement
 
   case class FunctionDeclaration(ident: String, params: List[String], body: List[SourceElement])
+
+  case class VariableDeclaration(ident: String, initialiser: Option[Expression])
 
   sealed trait Expression
   case class InfixExpression(l: Expression, op: Operator, r: Expression) extends Expression
@@ -32,7 +35,9 @@ object Parser {
 
   sealed trait Operator
   case object AdditionOperator extends Operator
-  
+  case object SimpleAssignmentOperator extends Operator
+  case class CompoundAssigmentOperator(op: Operator) extends Operator
+
   import JavaConversions.iterableAsScalaIterable
   
   def nullableToOption[A <: AnyRef](a: A): Option[A] = if (a == null) None else Some(a)
@@ -45,6 +50,12 @@ object Parser {
 
   def transformSourceElement(node: Node): SourceElement = {
     node match {
+      case decl: ast.VariableDeclaration => StatementSourceElement(VariableStatement(
+          (for (child <- decl.getVariables()) yield VariableDeclaration(
+              child.getTarget().asInstanceOf[ast.Name].getIdentifier(),
+              nullableToOption(child.getInitializer()).map(transformExpression(_))
+          )).toList
+      ))
       case expressionStatement: ast.ExpressionStatement =>
         StatementSourceElement(ExpressionStatement(transformExpression(expressionStatement.getExpression())))
       case rs: ast.ReturnStatement => {

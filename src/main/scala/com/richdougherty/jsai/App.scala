@@ -22,6 +22,10 @@ object App {
       hello('world');
     """)
     test("123;")
+    test("""
+      var x = 123;
+      x;
+    """)
   }
 
   def test(source: String): Unit = {
