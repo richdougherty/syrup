@@ -38,12 +38,14 @@ object Parser {
   case class InfixExpression(l: Expression, op: BinaryOperator, r: Expression) extends Expression
   case class PostfixExpression(r: Expression, op: UnaryOperator) extends Expression
   sealed trait LiteralExpression extends Expression
+  case class BooleanLiteral(b: Boolean) extends LiteralExpression
   case class NumericLiteral(d: Double) extends LiteralExpression
   case class StringLiteral(d: String) extends LiteralExpression
   sealed trait MemberExpression extends Expression
   sealed trait PrimaryExpression extends MemberExpression
   case class Identifier(s: String) extends PrimaryExpression
   case class CallExpression(target: MemberExpression, args: List[Expression]) extends Expression
+  case class ConditionalExpression(testExpr: Expression, trueExpr: Expression, falseExpr: Expression) extends Expression
 
   sealed trait BinaryOperator
   sealed trait ReusableOperator extends BinaryOperator
@@ -144,6 +146,10 @@ object Parser {
         PostfixExpression(transformExpression(un.getOperand()), transformUnaryOperator(un.getOperator()))
       case un: ast.UnaryExpression =>
         PrefixExpression(transformUnaryOperator(un.getOperator()), transformExpression(un.getOperand()))
+      case kl: ast.KeywordLiteral => kl.getType() match {
+        case Token.TRUE => BooleanLiteral(true)
+        case Token.FALSE => BooleanLiteral(false)
+      }
       case nl: ast.NumberLiteral => NumericLiteral(nl.getNumber())
       case sl: ast.StringLiteral => StringLiteral(sl.getValue())
       case fc: ast.FunctionCall => CallExpression(
@@ -151,6 +157,11 @@ object Parser {
         (for (arg <- fc.getArguments()) yield transformExpression(arg)).toList
       )
       case n: ast.Name => Identifier(n.getIdentifier())
+      case c: ast.ConditionalExpression => ConditionalExpression(
+        transformExpression(c.getTestExpression()),
+        transformExpression(c.getTrueExpression()),
+        transformExpression(c.getFalseExpression())
+      )
       case _ => unimplementedTransform[Expression](node)
     }
   }

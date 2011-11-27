@@ -38,6 +38,7 @@ object App {
       loop: for (var i = 0; i < 10; i++) {}
       i;
     """)
+    test("true ? 1 : 0;")
   }
 
   def test(source: String): Unit = {

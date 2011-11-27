@@ -903,6 +903,7 @@ class Interpreter {
         oldValue
       }
     }
+    case BooleanLiteral(b) => VBool(b)
     case NumericLiteral(d) => VNum(d)
     case StringLiteral(s) => VStr(s)
     case CallExpression(target, args) => {
@@ -949,6 +950,17 @@ class Interpreter {
       val env = currentCxt.lexEnv
       val strict = isStrictModeCode(cxt.code)
       getIdentifierReference(Some(env), name, strict)
+    }
+    case ConditionalExpression(testExpr, trueExpr, falseExpr) => {
+      val lref = evaluateExpression(testExpr)
+      val lbool = toBoolean(getValue(lref))
+      if (lbool.d) {
+        val trueRef = evaluateExpression(trueExpr)
+        getValue(trueRef)
+      } else {
+        val falseRef = evaluateExpression(falseExpr)
+        getValue(falseRef)
+      }
     }
   }
 
