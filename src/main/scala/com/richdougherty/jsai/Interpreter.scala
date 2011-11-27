@@ -729,7 +729,7 @@ class Interpreter {
             ownDescOption match {
               case Some(desc: DataProp) => if (throwError) moThrow("TypeError") else moNop
               case _ => {
-                val descOption = o.getOwnProperty(p)
+                val descOption = o.getProperty(p)
                 descOption match {
                   case Some(desc: AccessorProp) => {
                     val setter = desc.set
@@ -741,6 +741,7 @@ class Interpreter {
                       ()
                     }
                   }
+                  case _ => if (throwError) moThrow("TypeError") else moNop
                 }
               }
             }
