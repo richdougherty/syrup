@@ -36,10 +36,25 @@ object Parser {
   case class CallExpression(target: MemberExpression, args: List[Expression]) extends Expression
 
   sealed trait BinaryOperator
+  sealed trait ReusableOperator extends BinaryOperator
+  // Primary
+  // Left-hand-side
+  // Postfix
+  // Unary
+  // Multiplicative
+  // Additive
   case object AdditionOperator extends ReusableOperator
+  // Bitwise shift
+  // Relational
+  case object LessThanOperator extends BinaryOperator
+  // Equality
+  // Binary bitwise
+  // Binary logical
+  // Conditional
+  // Assignment
   case object SimpleAssignmentOperator extends BinaryOperator
   case class CompoundAssignmentOperator(op: ReusableOperator) extends BinaryOperator
-  sealed trait ReusableOperator extends BinaryOperator
+  // Comma
 
   sealed trait UnaryOperator
   case object IncrementOperator extends UnaryOperator
@@ -106,6 +121,7 @@ object Parser {
   def transformBinaryOperator(op: Int): BinaryOperator = {
     op match {
       case Token.ADD => AdditionOperator
+      case Token.LT => LessThanOperator
       case Token.ASSIGN => SimpleAssignmentOperator
       case Token.ASSIGN_ADD => CompoundAssignmentOperator(AdditionOperator)
       case _ => error("Cannot transform BinaryOperator: "+op)

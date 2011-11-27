@@ -33,6 +33,7 @@ object App {
       x++;
       x
     """)
+    test("1 < 2;");
   }
 
   def test(source: String): Unit = {

@@ -823,32 +823,61 @@ class Interpreter {
     }
   }
 
+  def abstractRelationalComparison(x: Val, y: Val, leftFirst: Boolean): Option[Boolean] @cps[MachineOp] = {
+    val (px, py) = if (leftFirst) {
+      (toPrimitive(x), toPrimitive(y))
+    } else {
+      (toPrimitive(y), toPrimitive(x))
+    }
+    (px, py) match {
+      case (px: VStr, py: VStr) => {
+        Some(px.d < py.d)
+      }
+      case _ => {
+        val nx = toNumber(px)
+        val ny = toNumber(py)
+        // FIXME: Make sure that the JVM's semantics match ECMAScript's
+        val lt = nx.d < ny.d
+        val gt = nx.d > ny.d
+        if (lt == gt) None else Some(lt)
+      }
+    }
+  }
+
   def evaluateExpression(expr: Expression): ValOrRef @cps[MachineOp] = expr match {
-    case InfixExpression(l, op, r) => op match {
+    case InfixExpression(lexpr, op, rexpr) => op match {
       case op@AdditionOperator => {
-        val lref = evaluateExpression(l)
+        val lref = evaluateExpression(lexpr)
         val lval = getValue(lref)
-        val rref = evaluateExpression(r)
+        val rref = evaluateExpression(rexpr)
         val rval = getValue(rref)
         evaluateReusableOperation(lval, op, rval)
       }
+      case op@LessThanOperator => {
+        val lref = evaluateExpression(lexpr)
+        val lval = getValue(lref)
+        val rref = evaluateExpression(rexpr)
+        val rval = getValue(rref)
+        val r = abstractRelationalComparison(lval, rval, true)
+        VBool(r.getOrElse(false))
+      }
       case SimpleAssignmentOperator => {
-        val lref = evaluateExpression(l)
-        val rref = evaluateExpression(r)
+        val lref = evaluateExpression(lexpr)
+        val rref = evaluateExpression(rexpr)
         val rval = getValue(rref)
         guardAssignment(lref)
         putValue(lref, rval)
         rval
       }
       case CompoundAssignmentOperator(compoundOp) => {
-        val lref = evaluateExpression(l)
+        val lref = evaluateExpression(lexpr)
         val lval = getValue(lref)
-        val rref = evaluateExpression(r)
+        val rref = evaluateExpression(rexpr)
         val rval = getValue(rref)
-        val res = evaluateReusableOperation(lval, compoundOp, rval)
+        val r = evaluateReusableOperation(lval, compoundOp, rval)
         guardAssignment(lref)
-        putValue(lref, res)
-        res
+        putValue(lref, r)
+        r
       }
     }
     case PostfixExpression(l, op) => op match {
