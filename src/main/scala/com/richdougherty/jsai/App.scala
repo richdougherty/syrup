@@ -39,6 +39,11 @@ object App {
       i;
     """)
     test("true ? 1 : 0;")
+    test("""
+      var x = -1;
+      if (true) { x = 1; } else { x = 0; }
+      x;
+    """)
   }
 
   def test(source: String): Unit = {

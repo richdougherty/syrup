@@ -19,6 +19,10 @@ object Parser {
   case class BlockStatement(stmts: List[Statement]) extends Statement
   case class VariableStatement(decls: List[VariableDeclaration]) extends Statement
   case class ExpressionStatement(e: Expression) extends Statement
+  case class IfStatement(
+      testExpr: Expression,
+      trueStmt: Statement,
+      falseStmt: Option[Statement]) extends Statement
   sealed trait IterationStatement
   case class ForStatement(
       init: Either[Option[Expression],List[VariableDeclaration]],
@@ -71,6 +75,7 @@ object Parser {
   sealed trait UnaryOperator
   case object IncrementOperator extends UnaryOperator
   case object DecrementOperator extends UnaryOperator
+  case object NegativeOperator extends UnaryOperator
 
   import JavaConversions.iterableAsScalaIterable
   
@@ -105,6 +110,11 @@ object Parser {
       )
       case expressionStatement: ast.ExpressionStatement =>
         ExpressionStatement(transformExpression(expressionStatement.getExpression()))
+      case is: ast.IfStatement => IfStatement(
+        transformExpression(is.getCondition()),
+        transformStatement(is.getThenPart()),
+        nullableToOption(is.getElsePart()).map(transformStatement(_))
+      )
       case fl: ast.ForLoop => ForStatement(
           fl.getInitializer() match {
             case decl: ast.VariableDeclaration => Right(transformVariableDeclarationList(decl))
@@ -180,6 +190,7 @@ object Parser {
     op match {
       case Token.INC => IncrementOperator
       case Token.DEC => DecrementOperator
+      case Token.NEG => NegativeOperator
       case _ => error("Cannot transform UnaryOperator: "+op)
     }
   }

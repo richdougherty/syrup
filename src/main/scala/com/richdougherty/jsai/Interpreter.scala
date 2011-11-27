@@ -858,6 +858,13 @@ class Interpreter {
   }
 
   def evaluateExpression(expr: Expression): ValOrRef @cps[MachineOp] = expr match {
+    case PrefixExpression(op, rexpr) => op match {
+      case NegativeOperator => {
+        val expr = evaluateExpression(rexpr)
+        val oldValue = toNumber(getValue(expr))
+        VNum(-1 * oldValue.d)
+      }
+    }
     case InfixExpression(lexpr, op, rexpr) => op match {
       case op@AdditionOperator => {
         val lref = evaluateExpression(lexpr)
@@ -999,6 +1006,18 @@ class Interpreter {
       case ExpressionStatement(expr) => {
         val exprRef = evaluateExpression(expr)
         Completion(CNormal, Some(getValue(exprRef)), None)
+      }
+      case IfStatement(testExpr, trueStmt, falseStmt) => {
+        val exprRef = evaluateExpression(testExpr)
+        val exprBool = toBoolean(getValue(exprRef))
+        if (exprBool.d) {
+          evaluateStatement(AnnotatedStatement(trueStmt, Set.empty))
+        } else {
+          falseStmt match {
+            case None => Completion(CNormal, None, None)
+            case Some(falseStmt) => evaluateStatement(AnnotatedStatement(falseStmt, Set.empty))
+          }
+        }
       }
       case ForStatement(init, testExpr, incrExpr, forStmt) => {
         init match {
