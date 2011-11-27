@@ -1147,8 +1147,7 @@ class Interpreter {
 
     val (m1, c) = runMachineOp(m, reset {
       instantiateDeclarationBindings(Nil)
-      val evalCompletion = evaluateSourceElements(p.ses)
-      MOComp((_: Machine) => evalCompletion)
+      evaluateSourceElements(p.ses)
     })
     c
   }
