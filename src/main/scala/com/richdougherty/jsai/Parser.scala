@@ -95,6 +95,7 @@ object Parser {
   def transformOperator(op: Int): Operator = {
     op match {
       case Token.ADD => AdditionOperator
+      case Token.ASSIGN => SimpleAssignmentOperator
       case _ => error("Cannot transform operator: "+op)
     }
   }

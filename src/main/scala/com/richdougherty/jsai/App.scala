@@ -26,6 +26,11 @@ object App {
       var x = 123;
       x;
     """)
+    test("""
+      var x = 123;
+      x = x + 1;
+      x
+    """)
   }
 
   def test(source: String): Unit = {

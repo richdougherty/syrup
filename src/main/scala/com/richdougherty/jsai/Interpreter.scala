@@ -15,6 +15,7 @@ import Parser.FunctionDeclarationSourceElement
 import Parser.InfixExpression
 import Parser.NumericLiteral
 import Parser.ReturnStatement
+import Parser.SimpleAssignmentOperator
 import Parser.SourceElement
 import Parser.StatementSourceElement
 import Parser.StringLiteral
@@ -831,6 +832,17 @@ class Interpreter {
             VNum(lnum.d + rnum.d)
           }
         }
+      }
+      case SimpleAssignmentOperator => {
+        val lref = evaluateExpression(l)
+        val rref = evaluateExpression(r)
+        val rval = getValue(rref)
+        lref match {
+          case Ref(_: EnvRec, "eval" | "arguments", true) => moThrow("SyntaxError")
+          case _ => moNop
+        }
+        putValue(lref, rval)
+        rval
       }
     }
     case NumericLiteral(d) => VNum(d)
