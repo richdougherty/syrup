@@ -7,6 +7,7 @@ import scala.collection.GenTraversableOnce
 import scala.util.continuations._
 import Parser.AdditionOperator
 import Parser.CallExpression
+import Parser.CompoundableOperator
 import Parser.CompoundAssignmentOperator
 import Parser.Expression
 import Parser.ExpressionStatement
@@ -814,7 +815,7 @@ class Interpreter {
     }
   }
 
-  def evaluateInfixOperation(lval: Val, op: Operator, rval: Val): Val @cps[MachineOp] = op match {
+  def evaluateCompoundableOperation(lval: Val, op: CompoundableOperator, rval: Val): Val @cps[MachineOp] = op match {
     case AdditionOperator => {
       val lprim = toPrimitive(lval)
       val rprim = toPrimitive(rval)
@@ -842,12 +843,12 @@ class Interpreter {
 
   def evaluateExpression(expr: Expression): ValOrRef @cps[MachineOp] = expr match {
     case InfixExpression(l, op, r) => op match {
-      case AdditionOperator => {
+      case op@AdditionOperator => {
         val lref = evaluateExpression(l)
         val lval = getValue(lref)
         val rref = evaluateExpression(r)
         val rval = getValue(rref)
-        evaluateInfixOperation(lval, op, rval)
+        evaluateCompoundableOperation(lval, op, rval)
       }
       case SimpleAssignmentOperator => {
         val lref = evaluateExpression(l)
@@ -862,7 +863,7 @@ class Interpreter {
         val lval = getValue(lref)
         val rref = evaluateExpression(r)
         val rval = getValue(rref)
-        val res = evaluateInfixOperation(lval, compoundOp, rval)
+        val res = evaluateCompoundableOperation(lval, compoundOp, rval)
         guardAssignment(lref)
         putValue(lref, res)
         res

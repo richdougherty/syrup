@@ -34,9 +34,10 @@ object Parser {
   case class CallExpression(target: MemberExpression, args: List[Expression]) extends Expression
 
   sealed trait Operator
-  case object AdditionOperator extends Operator
+  sealed trait CompoundableOperator extends Operator
+  case object AdditionOperator extends CompoundableOperator
   case object SimpleAssignmentOperator extends Operator
-  case class CompoundAssignmentOperator(op: Operator) extends Operator
+  case class CompoundAssignmentOperator(op: CompoundableOperator) extends Operator
 
   import JavaConversions.iterableAsScalaIterable
   
