@@ -672,8 +672,8 @@ class Interpreter {
           val o = toObject(base.asInstanceOf[Val])
           val descOption = o.getProperty(getReferencedName(v))
           descOption match {
-            case None => VUndef
-            case Some(desc: DataProp) => desc.value
+            case None => moVal(VUndef)
+            case Some(desc: DataProp) => moVal(desc.value)
             case Some(desc: AccessorProp) => {
               val getter = desc.get
               if (getter == VUndef) {
