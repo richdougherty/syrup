@@ -759,8 +759,19 @@ class Interpreter {
   }
 
   // ToPrimitive(V) in spec
-  def toPrimitive(v: Val): Val = {
-    v // FIXME: Stub
+  def toPrimitive(v: Val, preferredType: Option[Typ] = None): Val = v match {
+    case _: VObj => error("toPrimitive() not yet implemented for objects")
+    case _ => v
+  }
+
+  // ToBoolean(V) in spec
+  def toBoolean(v: Val): VBool = v match {
+    case VUndef => VBool(false)
+    case VNull => VBool(false)
+    case b: VBool => b
+    case n: VNum => VBool(!(n.d == 0.0 || n.d.isNaN))
+    case s: VStr => VBool(!s.d.isEmpty)
+    case _: VObj => VBool(true)
   }
 
   // ToString(V) in spec
@@ -991,8 +1002,8 @@ class Interpreter {
         def loop(v: Option[Val]): Nothing @cps[MachineOp] = {
           if (testExpr.isDefined) {
             val testExprRef = evaluateExpression(testExpr.get)
-            // FIXME: Uncomment and implement
-            //if (!toBoolean(getValue(testExprRef))) moComplete(Completion(CReturn, v, None)) else $$
+            val testExprBool = toBoolean(getValue(testExprRef))
+            if (!(testExprBool.d)) moComplete(Completion(CNormal, v, None)) else $$
           } else $$
           val stmtComp = completionOf(evaluateStatement(AnnotatedStatement(forStmt, Set.empty)))
           val v2 = if (stmtComp.v.isDefined) stmtComp.v else v
