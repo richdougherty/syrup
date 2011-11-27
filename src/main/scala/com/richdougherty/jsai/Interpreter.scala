@@ -7,6 +7,7 @@ import scala.collection.GenTraversableOnce
 import scala.util.continuations._
 import Parser.AdditionOperator
 import Parser.CallExpression
+import Parser.CompoundAssignmentOperator
 import Parser.Expression
 import Parser.ExpressionStatement
 import Parser.Identifier
@@ -14,6 +15,7 @@ import Parser.FunctionDeclaration
 import Parser.FunctionDeclarationSourceElement
 import Parser.InfixExpression
 import Parser.NumericLiteral
+import Parser.Operator
 import Parser.ReturnStatement
 import Parser.SimpleAssignmentOperator
 import Parser.SourceElement
@@ -812,6 +814,32 @@ class Interpreter {
     }
   }
 
+  def evaluateInfixOperation(lval: Val, op: Operator, rval: Val): Val @cps[MachineOp] = op match {
+    case AdditionOperator => {
+      val lprim = toPrimitive(lval)
+      val rprim = toPrimitive(rval)
+      (lprim, rprim) match {
+        case (VStr(_), _) | (_, VStr(_)) => {
+          val lstr = toString(lprim)
+          val rstr = toString(rprim)
+          VStr(lstr.d + rstr.d)
+        }
+        case _ => {
+          val lnum = toNumber(lprim)
+          val rnum = toNumber(rprim)
+          VNum(lnum.d + rnum.d)
+        }
+      }
+    }
+  }
+
+  def guardAssignment(lref: ValOrRef): Unit @cps[MachineOp] = {
+    lref match {
+      case Ref(_: EnvRec, "eval" | "arguments", true) => moThrow("SyntaxError")
+      case _ => moNop
+    }
+  }
+
   def evaluateExpression(expr: Expression): ValOrRef @cps[MachineOp] = expr match {
     case InfixExpression(l, op, r) => op match {
       case AdditionOperator => {
@@ -819,31 +847,25 @@ class Interpreter {
         val lval = getValue(lref)
         val rref = evaluateExpression(r)
         val rval = getValue(rref)
-        val lprim = toPrimitive(lval)
-        val rprim = toPrimitive(rval)
-        (lprim, rprim) match {
-          case (VStr(_), _) | (_, VStr(_)) => {
-            val lstr = toString(lprim)
-            val rstr = toString(rprim)
-            VStr(lstr.d + rstr.d)
-          }
-          case _ => {
-            val lnum = toNumber(lprim)
-            val rnum = toNumber(rprim)
-            VNum(lnum.d + rnum.d)
-          }
-        }
+        evaluateInfixOperation(lval, op, rval)
       }
       case SimpleAssignmentOperator => {
         val lref = evaluateExpression(l)
         val rref = evaluateExpression(r)
         val rval = getValue(rref)
-        lref match {
-          case Ref(_: EnvRec, "eval" | "arguments", true) => moThrow("SyntaxError")
-          case _ => moNop
-        }
+        guardAssignment(lref)
         putValue(lref, rval)
         rval
+      }
+      case CompoundAssignmentOperator(compoundOp) => {
+        val lref = evaluateExpression(l)
+        val lval = getValue(lref)
+        val rref = evaluateExpression(r)
+        val rval = getValue(rref)
+        val res = evaluateInfixOperation(lval, compoundOp, rval)
+        guardAssignment(lref)
+        putValue(lref, res)
+        res
       }
     }
     case NumericLiteral(d) => VNum(d)

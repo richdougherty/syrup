@@ -29,6 +29,7 @@ object App {
     test("""
       var x = 123;
       x = x + 1;
+      x += 1;
       x
     """)
   }

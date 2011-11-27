@@ -36,7 +36,7 @@ object Parser {
   sealed trait Operator
   case object AdditionOperator extends Operator
   case object SimpleAssignmentOperator extends Operator
-  case class CompoundAssigmentOperator(op: Operator) extends Operator
+  case class CompoundAssignmentOperator(op: Operator) extends Operator
 
   import JavaConversions.iterableAsScalaIterable
   
@@ -96,6 +96,7 @@ object Parser {
     op match {
       case Token.ADD => AdditionOperator
       case Token.ASSIGN => SimpleAssignmentOperator
+      case Token.ASSIGN_ADD => CompoundAssignmentOperator(AdditionOperator)
       case _ => error("Cannot transform operator: "+op)
     }
   }
