@@ -133,10 +133,10 @@ class Interpreter {
     def get(propertyName: String): Val @cps[MachineOp] = {
       val desc = getProperty(propertyName)
       desc match {
-        case None => moVal(VUndef)
-        case Some(dp: DataProp) => moVal(dp.value)
+        case None => $(VUndef)
+        case Some(dp: DataProp) => $(dp.value)
         case Some(ap: AccessorProp) => ap.get match {
-          case VUndef => moVal(VUndef)
+          case VUndef => $(VUndef)
           case obj: VObj => {
             val callable = obj.asInstanceOf[CallableObj]
             callable.call(this, Nil).asInstanceOf[Val]
@@ -151,11 +151,11 @@ class Interpreter {
     def getProperty(propertyName: String): Option[Prop] @cps[MachineOp] = {
       val propOption = getOwnProperty(propertyName)
       propOption match {
-        case Some(_) => moVal(propOption)
+        case Some(_) => $(propOption)
         case None => {
           val protoOption = prototype
           protoOption match {
-            case None => moVal(None)
+            case None => $(None)
             case Some(proto) => proto.getProperty(propertyName)
           }
         }
@@ -163,7 +163,7 @@ class Interpreter {
     }
     def put(propertyName: String, v: Val, throwError: Boolean): Unit @cps[MachineOp] = {
       if (!canPut(propertyName)) {
-        if (throwError) moThrow("TypeError") else moNop
+        if (throwError) moThrow("TypeError") else $$
       } else {
         val ownDesc = getOwnProperty(propertyName)
         ownDesc match {
@@ -191,12 +191,12 @@ class Interpreter {
     def canPut(propertyName: String): Boolean @cps[MachineOp] = {
       val desc = getOwnProperty(propertyName)
       desc match {
-        case Some(ap: AccessorProp) => moVal(ap.set != VUndef)
-        case Some(dp: DataProp) => moVal(dp.writable)
+        case Some(ap: AccessorProp) => $(ap.set != VUndef)
+        case Some(dp: DataProp) => $(dp.writable)
         case _ => {
           val proto = prototype
           proto match {
-            case None => moVal(extensible)
+            case None => $(extensible)
             case _ => {
               val inherited = getProperty(propertyName)
               inherited match {
@@ -328,7 +328,7 @@ class Interpreter {
           false
         }
         case Leave => {
-          moVal(true)
+          $(true)
         }
       }
     }
@@ -423,8 +423,8 @@ class Interpreter {
         case Some(ib: ImmutableBinding) => {
           val v = @*(ib.v)
           v match {
-            case None => if (strict) moThrow("ReferenceError") else moVal(VUndef)
-            case Some(v) => moVal(v)
+            case None => if (strict) moThrow("ReferenceError") else $(VUndef)
+            case Some(v) => $(v)
           }
         }
       }
@@ -437,9 +437,9 @@ class Interpreter {
     def initializeImmutableBinding(name: String, v: Val): Unit @cps[MachineOp] = {
       val binding = @*(bindings).get(name)
       binding match {
-        case None => moVal(assert(false))
+        case None => $(assert(false))
         case Some(ib: ImmutableBinding) => { ib.v @= Some(v) }
-        case Some(_: MutableBinding) => moVal(assert(false))
+        case Some(_: MutableBinding) => $(assert(false))
       }
     }
   }
@@ -466,7 +466,7 @@ class Interpreter {
       if (!value) {
         if (!strict) VUndef
         moThrow("ReferenceError")
-      } else moNop
+      } else $$
       bindings.get(name)
     }
     def implicitThisValue: Val = {
@@ -546,12 +546,12 @@ class Interpreter {
   }
 
   // Pass a value; used to work around continuations plugin bugs.
-  def moVal[A](a: A) = moAccess[A] { (m: Machine, k: A => MachineOp) =>
+  def $[A](a: A) = moAccess[A] { (m: Machine, k: A => MachineOp) =>
     k(a) // FIXME: Handle missing object.
   }
 
   // Does nothing; used to work around continuations plugin bugs.
-  def moNop = moVal(())
+  def $$ = $(())
 
   def alloc[A] = moUpdate[Cell[A]] {(m: Machine, k: Cell[A] => MachineOp) =>
     val (h, cell) = m.heap.alloc[A]
@@ -664,7 +664,7 @@ class Interpreter {
   def getValue(v: ValOrRef): Val @cps[MachineOp] = v match {
     case v: Ref => {
       val base = getBase(v)
-      if (isUnresolvableReference(v)) moThrow("ReferenceError") else moNop
+      if (isUnresolvableReference(v)) moThrow("ReferenceError") else $$
       if (isPropertyReference(v)) {
         if (!hasPrimitiveBase(v)) {
           base.asInstanceOf[VObj].get(getReferencedName(v))
@@ -672,12 +672,12 @@ class Interpreter {
           val o = toObject(base.asInstanceOf[Val])
           val descOption = o.getProperty(getReferencedName(v))
           descOption match {
-            case None => moVal(VUndef)
-            case Some(desc: DataProp) => moVal(desc.value)
+            case None => $(VUndef)
+            case Some(desc: DataProp) => $(desc.value)
             case Some(desc: AccessorProp) => {
               val getter = desc.get
               if (getter == VUndef) {
-                moVal(VUndef)
+                $(VUndef)
               } else {
                 getter.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], Nil).asInstanceOf[Val]
                 // FIXME: Should spec throw a TypeError if getter returns a reference - or call getValue() recursively?
@@ -699,7 +699,7 @@ class Interpreter {
     case v: Ref => {
       val base = getBase(v)
       if (isUnresolvableReference(v)) {
-        if (isStrictReference(v)) moThrow("ReferenceError") else moNop
+        if (isStrictReference(v)) moThrow("ReferenceError") else $$
         val go = getGlobalObj
         go.put(getReferencedName(v), w, false)
       } else if (isPropertyReference(v)) {
@@ -710,25 +710,25 @@ class Interpreter {
           val throwError = isStrictReference(v)
           val o = toObject(base.asInstanceOf[Val])
           if (!o.canPut(p)) {
-            if (throwError) moThrow("TypeError") else moNop
+            if (throwError) moThrow("TypeError") else $$
           } else {
             val ownDescOption = o.getOwnProperty(p)
             ownDescOption match {
-              case Some(desc: DataProp) => if (throwError) moThrow("TypeError") else moNop
+              case Some(desc: DataProp) => if (throwError) moThrow("TypeError") else $$
               case _ => {
                 val descOption = o.getProperty(p)
                 descOption match {
                   case Some(desc: AccessorProp) => {
                     val setter = desc.set
                     if (setter == VUndef) {
-                      moVal(assertionError("Setter cannot be undefined"))
+                      $(assertionError("Setter cannot be undefined"))
                     } else {
                       setter.asInstanceOf[CallableObj].call(base.asInstanceOf[VObj], w::Nil)
                       // FIXME: Should spec throw a TypeError if setter returns a reference - or call getValue()?
                       ()
                     }
                   }
-                  case _ => if (throwError) moThrow("TypeError") else moNop
+                  case _ => if (throwError) moThrow("TypeError") else $$
                 }
               }
             }
@@ -821,7 +821,7 @@ class Interpreter {
   def guardAssignment(lref: ValOrRef): Unit @cps[MachineOp] = {
     lref match {
       case Ref(_: EnvRec, "eval" | "arguments", true) => moThrow("SyntaxError")
-      case _ => moNop
+      case _ => $$
     }
   }
 
@@ -906,9 +906,9 @@ class Interpreter {
         arg
       }
 //    If Type(func) is not Object, throw a TypeError exception.
-      if (typ(func) != TyObj) moThrow("TypeError") else moNop
+      if (typ(func) != TyObj) moThrow("TypeError") else $$
 //    If IsCallable(func) is false, throw a TypeError exception.
-      if (!isCallable(func)) moThrow("TypeError") else moNop
+      if (!isCallable(func)) moThrow("TypeError") else $$
       val thisValue = ref match {
         case ref: Ref => {
 //    If Type(ref) is Reference, then
@@ -979,7 +979,7 @@ class Interpreter {
       }
       case ForStatement(init, testExpr, incrExpr, forStmt) => {
         init match {
-          case Left(None) => moVal(None)
+          case Left(None) => $(None)
           case Left(Some(expr)) => {
             val exprRef = evaluateExpression(expr)
             getValue(exprRef)
@@ -992,8 +992,8 @@ class Interpreter {
           if (testExpr.isDefined) {
             val testExprRef = evaluateExpression(testExpr.get)
             // FIXME: Uncomment and implement
-            //if (!toBoolean(getValue(testExprRef))) moComplete(Completion(CReturn, v, None)) else moNop
-          } else moNop
+            //if (!toBoolean(getValue(testExprRef))) moComplete(Completion(CReturn, v, None)) else $$
+          } else $$
           val stmtComp = completionOf(evaluateStatement(AnnotatedStatement(forStmt, Set.empty)))
           val v2 = if (stmtComp.v.isDefined) stmtComp.v else v
           stmtComp match {
@@ -1007,7 +1007,7 @@ class Interpreter {
               if (incrExpr.isDefined) {
                 val incrRefExpr = evaluateExpression(incrExpr.get)
                 getValue(incrRefExpr)
-              } else moNop
+              } else $$
               loop(v2)
             }
           }
@@ -1118,11 +1118,11 @@ class Interpreter {
         val c = completionOf(evaluateSourceElements(code.ses))
         setCurrentCxt(parentCxt)
         c match {
-          case Completion(CNormal, _, None) => moVal(VUndef)
+          case Completion(CNormal, _, None) => $(VUndef)
           case Completion(CBreak | CContinue, _, _) =>
             assertionError("Illegal completion for function: " + c)
-          case Completion(CReturn, None, None) => moVal(VUndef)
-          case Completion(CReturn, Some(v), None) => moVal(v)
+          case Completion(CReturn, None, None) => $(VUndef)
+          case Completion(CReturn, Some(v), None) => $(v)
           case Completion(CThrow, _, _) => moComplete(c)
         }
       }
@@ -1167,7 +1167,7 @@ class Interpreter {
         val envRec = lex.er
         val exists = envRec.hasBinding(name)
         if (exists) {
-          moVal(Ref(envRec, name, strict))
+          $(Ref(envRec, name, strict))
         } else {
           val outer = lex.outer
           getIdentifierReference(outer, name, strict)
@@ -1193,12 +1193,12 @@ class Interpreter {
         for (argName <- names.cps) {
           val v = if (n > argCount) VUndef else args(n)
           val argAlreadyDeclared = env.hasBinding(argName)
-          if (!argAlreadyDeclared) env.createMutableBinding(argName, false) else moNop // FIXME: Spec doesn't specify value of canDelete
+          if (!argAlreadyDeclared) env.createMutableBinding(argName, false) else $$ // FIXME: Spec doesn't specify value of canDelete
           env.setMutableBinding(argName, v, strict)
           n += 1
         }
       }
-      case _ => moVal(())
+      case _ => $(())
     }
     cpsIterable(cxt.code.ses).cps.foreach {
       case FunctionDeclarationSourceElement(fd@FunctionDeclaration(fn, _, _)) => {
@@ -1220,8 +1220,8 @@ class Interpreter {
             }
           ) {
             moThrow("TypeError")
-          } else moNop
-        } else moNop
+          } else $$
+        } else $$
         env.setMutableBinding(fn, fo, strict)
       }
       case _ => ()
