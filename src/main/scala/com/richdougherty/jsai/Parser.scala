@@ -1,5 +1,6 @@
 package com.richdougherty.jsai
 
+import org.mozilla.javascript.CompilerEnvirons
 import org.mozilla.javascript.{ Parser => RhinoParser }
 import org.mozilla.javascript.Node
 import org.mozilla.javascript.Token
@@ -15,9 +16,18 @@ object Parser {
   case class FunctionDeclarationSourceElement(functionDeclaration: FunctionDeclaration) extends SourceElement
 
   sealed trait Statement
+  case class BlockStatement(stmts: List[Statement]) extends Statement
   case class VariableStatement(decls: List[VariableDeclaration]) extends Statement
   case class ExpressionStatement(e: Expression) extends Statement
+  sealed trait IterationStatement
+  case class ForStatement(
+      init: Either[Option[Expression],List[VariableDeclaration]],
+      testExpr: Option[Expression],
+      incrExpr: Option[Expression],
+      stmt: Statement) extends Statement with IterationStatement
   case class ReturnStatement(expr: Option[Expression]) extends Statement
+  case class SwitchStatement() extends Statement // FIXME: Stub
+  case class LabelledStatement(label: String, child: Statement) extends Statement
 
   case class FunctionDeclaration(ident: String, params: List[String], body: List[SourceElement])
 
@@ -72,18 +82,6 @@ object Parser {
 
   def transformSourceElement(node: Node): SourceElement = {
     node match {
-      case decl: ast.VariableDeclaration => StatementSourceElement(VariableStatement(
-          (for (child <- decl.getVariables()) yield VariableDeclaration(
-              child.getTarget().asInstanceOf[ast.Name].getIdentifier(),
-              nullableToOption(child.getInitializer()).map(transformExpression(_))
-          )).toList
-      ))
-      case expressionStatement: ast.ExpressionStatement =>
-        StatementSourceElement(ExpressionStatement(transformExpression(expressionStatement.getExpression())))
-      case rs: ast.ReturnStatement => {
-        val expr = for (child <- nullableToOption(rs.getReturnValue())) yield transformExpression(child)
-        StatementSourceElement(ReturnStatement(expr))
-      }
       case fn: ast.FunctionNode => {
         FunctionDeclarationSourceElement(FunctionDeclaration(
             fn.getFunctionName().getIdentifier(),
@@ -91,8 +89,47 @@ object Parser {
             (for (child <- fn.getBody()) yield transformSourceElement(child)).toList
         ))
       }
-      case _ => unimplementedTransform[SourceElement](node)
+      case _ => StatementSourceElement(transformStatement(node))
     }
+  }
+
+  def transformStatement(node: Node): Statement = {
+    node match {
+      case sc: ast.Scope if sc.getType == Token.BLOCK => BlockStatement(
+        (for (child <- sc.getStatements()) yield transformStatement(child)).toList
+      )
+      case decl: ast.VariableDeclaration => VariableStatement(
+          transformVariableDeclarationList(decl)
+      )
+      case expressionStatement: ast.ExpressionStatement =>
+        ExpressionStatement(transformExpression(expressionStatement.getExpression()))
+      case fl: ast.ForLoop => ForStatement(
+          fl.getInitializer() match {
+            case decl: ast.VariableDeclaration => Right(transformVariableDeclarationList(decl))
+            case null => Left(None)
+            case expr => Left(Some(transformExpression(expr)))
+          },
+          nullableToOption(fl.getCondition()).map(transformExpression(_)),
+          nullableToOption(fl.getIncrement()).map(transformExpression(_)),
+          transformStatement(fl.getBody())
+      )
+      case rs: ast.ReturnStatement => {
+        val expr = for (child <- nullableToOption(rs.getReturnValue())) yield transformExpression(child)
+        ReturnStatement(expr)
+      }
+      case ls: ast.LabeledStatement => {
+        val stmt = transformStatement(ls.getStatement());
+        ls.getLabels().foldRight(stmt)((lab: ast.Label, childStmt: Statement) => LabelledStatement(lab.getName(), childStmt))
+      }
+      case _ => unimplementedTransform[Statement](node)
+    }
+  }
+
+  def transformVariableDeclarationList(decl: ast.VariableDeclaration): List[VariableDeclaration] = {
+    (for (child <- decl.getVariables()) yield VariableDeclaration(
+      child.getTarget().asInstanceOf[ast.Name].getIdentifier(),
+      nullableToOption(child.getInitializer()).map(transformExpression(_))
+    )).toList
   }
 
   def transformMemberExpression(node: Node): MemberExpression = node match {
@@ -139,7 +176,9 @@ object Parser {
   def unimplementedTransform[A](node: Node): A = error("Not implemented: " + node.getClass);
 
   def parse(programSource: String): Program = {
-    val rhinoParser = new RhinoParser()
+    val ces = new CompilerEnvirons()
+    ces.setIdeMode(true)
+    val rhinoParser = new RhinoParser(ces)
     val rhinoAst = rhinoParser.parse(programSource, "<program>", 1)
     transformScriptNode(rhinoAst.asInstanceOf[AstRoot])
   }

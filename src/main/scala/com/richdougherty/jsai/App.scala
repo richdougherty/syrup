@@ -34,6 +34,10 @@ object App {
       x
     """)
     test("1 < 2;");
+    test("""
+      loop: for (var i = 0; i < 10; i++) {}
+      i;
+    """)
   }
 
   def test(source: String): Unit = {

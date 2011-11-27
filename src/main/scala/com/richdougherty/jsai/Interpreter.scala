@@ -387,6 +387,8 @@ class Interpreter {
   case class EvalCode(ses: List[SourceElement], directStrictCall: Boolean) extends Code
   case class FunctionCode(func: VObj, ses: List[SourceElement], strict: Boolean) extends Code
 
+  final case class AnnotatedStatement(stmt: Statement, labelSet: Set[Option[String]])
+
   case class LexEnv(er: EnvRec, outer: Option[LexEnv])
 
   sealed trait ValOrEnvRec
@@ -940,31 +942,106 @@ class Interpreter {
   }
 
   def evaluateSourceElement(se: SourceElement): Nothing @cps[MachineOp] = {
-    val c = se match {
-      case StatementSourceElement(st) => st match {
-        case VariableStatement(decls) => {
-          for (decl <- decls.cps) {
-            evaluateVariableDeclaration(decl)
+    // FIXME: Throw error break and continue?
+    se match {
+      case StatementSourceElement(st) => evaluateStatement(AnnotatedStatement(st, Set.empty))
+      case FunctionDeclarationSourceElement(_) =>
+        moComplete(Completion(CNormal, None, None))
+    }
+  }
+
+  def evaluateStatement(as: AnnotatedStatement): Nothing @cps[MachineOp] = {
+    val c = as.stmt match {
+      case BlockStatement(stmts) => {
+        def loop(stmts: List[Statement], prevComp: Completion): Nothing @cps[MachineOp] = stmts match {
+          case Nil => moComplete(prevComp)
+          case headStmt::rest => {
+            val s = completionOf(evaluateStatement(AnnotatedStatement(headStmt, Set.empty)))
+            s match {
+              case Completion(CThrow, v, _) => moComplete(Completion(CThrow, v, None))
+              case Completion(CNormal, v, target) => {
+                val c = Completion(CNormal, if (v.isDefined) v else prevComp.v, target)
+                loop(rest, c)
+              }
+              case _ => moComplete(s)
+            }
           }
-          Completion(CNormal, None, None)
         }
-        case ExpressionStatement(expr) => {
-          val exprRef = evaluateExpression(expr)
-          Completion(CNormal, Some(getValue(exprRef)), None)
-        }
-        case ReturnStatement(expr) => expr match {
-          case None => Completion(CReturn, None, None)
-          case Some(expr0) => {
-            val exprRef = evaluateExpression(expr0)
-            Completion(CReturn, Some(getValue(exprRef)), None)
+        loop(stmts, Completion(CNormal, None, None))
+      }
+      case VariableStatement(decls) => {
+        evaluateVariableDeclarationList(decls)
+        Completion(CNormal, None, None)
+      }
+      case ExpressionStatement(expr) => {
+        val exprRef = evaluateExpression(expr)
+        Completion(CNormal, Some(getValue(exprRef)), None)
+      }
+      case ForStatement(init, testExpr, incrExpr, forStmt) => {
+        init match {
+          case Left(None) => moVal(None)
+          case Left(Some(expr)) => {
+            val exprRef = evaluateExpression(expr)
+            getValue(exprRef)
           }
+          case Right(decls) => {
+            evaluateVariableDeclarationList(decls)
+          }
+        }
+        def loop(v: Option[Val]): Nothing @cps[MachineOp] = {
+          if (testExpr.isDefined) {
+            val testExprRef = evaluateExpression(testExpr.get)
+            // FIXME: Uncomment and implement
+            //if (!toBoolean(getValue(testExprRef))) moComplete(Completion(CReturn, v, None)) else moNop
+          } else moNop
+          val stmtComp = completionOf(evaluateStatement(AnnotatedStatement(forStmt, Set.empty)))
+          val v2 = if (stmtComp.v.isDefined) stmtComp.v else v
+          stmtComp match {
+            case Completion(CBreak, _, target) if as.labelSet.contains(target) =>
+              moComplete(Completion(CNormal, v2, None))
+            case Completion(CBreak | CThrow | CReturn, _, _) =>
+              moComplete(stmtComp)
+            case Completion(CContinue, _, target) if !as.labelSet.contains(target) =>
+              moComplete(stmtComp)
+            case Completion(CNormal | CContinue, _, _) => {
+              if (incrExpr.isDefined) {
+                val incrRefExpr = evaluateExpression(incrExpr.get)
+                getValue(incrRefExpr)
+              } else moNop
+              loop(v2)
+            }
+          }
+        }
+        completionOf(loop(None))
+      }
+      case ReturnStatement(expr) => expr match {
+        case None => Completion(CReturn, None, None)
+        case Some(expr0) => {
+          val exprRef = evaluateExpression(expr0)
+          Completion(CReturn, Some(getValue(exprRef)), None)
         }
       }
-      case FunctionDeclarationSourceElement(_) =>
-        Completion(CNormal, None, None)
+      case LabelledStatement(label, childStmt) => {
+        val initialLabelSet: Set[Option[String]] = childStmt match {
+          case _: IterationStatement => Set.empty + None
+          case _: SwitchStatement => Set.empty + None
+          case _ => Set.empty
+        }
+        evaluateStatement(AnnotatedStatement(
+          childStmt,
+          initialLabelSet + Some(label) ++ as.labelSet
+        ))
+      }
     }
     moComplete(c)
   }
+
+  def evaluateVariableDeclarationList(decls: List[VariableDeclaration]): Unit @cps[MachineOp] = {
+    for (decl <- decls.cps) {
+      evaluateVariableDeclaration(decl)
+    }
+  }
+
 
   def evaluateSourceElements(ses: List[SourceElement]): Nothing @cps[MachineOp] = {
     val c = ses.cps.foldLeft(Completion(CNormal, None, None)) {
