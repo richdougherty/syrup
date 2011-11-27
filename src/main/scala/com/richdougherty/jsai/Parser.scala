@@ -24,7 +24,9 @@ object Parser {
   case class VariableDeclaration(ident: String, initialiser: Option[Expression])
 
   sealed trait Expression
-  case class InfixExpression(l: Expression, op: Operator, r: Expression) extends Expression
+  case class PrefixExpression(op: UnaryOperator, r: Expression) extends Expression
+  case class InfixExpression(l: Expression, op: BinaryOperator, r: Expression) extends Expression
+  case class PostfixExpression(r: Expression, op: UnaryOperator) extends Expression
   sealed trait LiteralExpression extends Expression
   case class NumericLiteral(d: Double) extends LiteralExpression
   case class StringLiteral(d: String) extends LiteralExpression
@@ -33,11 +35,15 @@ object Parser {
   case class Identifier(s: String) extends PrimaryExpression
   case class CallExpression(target: MemberExpression, args: List[Expression]) extends Expression
 
-  sealed trait Operator
-  sealed trait CompoundableOperator extends Operator
-  case object AdditionOperator extends CompoundableOperator
-  case object SimpleAssignmentOperator extends Operator
-  case class CompoundAssignmentOperator(op: CompoundableOperator) extends Operator
+  sealed trait BinaryOperator
+  case object AdditionOperator extends ReusableOperator
+  case object SimpleAssignmentOperator extends BinaryOperator
+  case class CompoundAssignmentOperator(op: ReusableOperator) extends BinaryOperator
+  sealed trait ReusableOperator extends BinaryOperator
+
+  sealed trait UnaryOperator
+  case object IncrementOperator extends UnaryOperator
+  case object DecrementOperator extends UnaryOperator
 
   import JavaConversions.iterableAsScalaIterable
   
@@ -80,8 +86,12 @@ object Parser {
 
   def transformExpression(node: Node): Expression = {
     node match {
-      case infixExpression: ast.InfixExpression =>
-        InfixExpression(transformExpression(infixExpression.getLeft()), transformOperator(infixExpression.getOperator()), transformExpression(infixExpression.getRight()))
+      case in: ast.InfixExpression =>
+        InfixExpression(transformExpression(in.getLeft()), transformBinaryOperator(in.getOperator()), transformExpression(in.getRight()))
+      case un: ast.UnaryExpression if un.isPostfix() =>
+        PostfixExpression(transformExpression(un.getOperand()), transformUnaryOperator(un.getOperator()))
+      case un: ast.UnaryExpression =>
+        PrefixExpression(transformUnaryOperator(un.getOperator()), transformExpression(un.getOperand()))
       case nl: ast.NumberLiteral => NumericLiteral(nl.getNumber())
       case sl: ast.StringLiteral => StringLiteral(sl.getValue())
       case fc: ast.FunctionCall => CallExpression(
@@ -93,12 +103,20 @@ object Parser {
     }
   }
   
-  def transformOperator(op: Int): Operator = {
+  def transformBinaryOperator(op: Int): BinaryOperator = {
     op match {
       case Token.ADD => AdditionOperator
       case Token.ASSIGN => SimpleAssignmentOperator
       case Token.ASSIGN_ADD => CompoundAssignmentOperator(AdditionOperator)
-      case _ => error("Cannot transform operator: "+op)
+      case _ => error("Cannot transform BinaryOperator: "+op)
+    }
+  }
+
+  def transformUnaryOperator(op: Int): UnaryOperator = {
+    op match {
+      case Token.INC => IncrementOperator
+      case Token.DEC => DecrementOperator
+      case _ => error("Cannot transform UnaryOperator: "+op)
     }
   }
 

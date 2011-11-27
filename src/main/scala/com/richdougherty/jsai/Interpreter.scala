@@ -5,25 +5,7 @@ import scala.collection.IterableLike
 import scala.collection.generic.CanBuildFrom
 import scala.collection.GenTraversableOnce
 import scala.util.continuations._
-import Parser.AdditionOperator
-import Parser.CallExpression
-import Parser.CompoundableOperator
-import Parser.CompoundAssignmentOperator
-import Parser.Expression
-import Parser.ExpressionStatement
-import Parser.Identifier
-import Parser.FunctionDeclaration
-import Parser.FunctionDeclarationSourceElement
-import Parser.InfixExpression
-import Parser.NumericLiteral
-import Parser.Operator
-import Parser.ReturnStatement
-import Parser.SimpleAssignmentOperator
-import Parser.SourceElement
-import Parser.StatementSourceElement
-import Parser.StringLiteral
-import Parser.VariableDeclaration
-import Parser.VariableStatement
+import Parser._
 
 class Interpreter {
   
@@ -815,7 +797,7 @@ class Interpreter {
     }
   }
 
-  def evaluateCompoundableOperation(lval: Val, op: CompoundableOperator, rval: Val): Val @cps[MachineOp] = op match {
+  def evaluateReusableOperation(lval: Val, op: ReusableOperator, rval: Val): Val @cps[MachineOp] = op match {
     case AdditionOperator => {
       val lprim = toPrimitive(lval)
       val rprim = toPrimitive(rval)
@@ -848,7 +830,7 @@ class Interpreter {
         val lval = getValue(lref)
         val rref = evaluateExpression(r)
         val rval = getValue(rref)
-        evaluateCompoundableOperation(lval, op, rval)
+        evaluateReusableOperation(lval, op, rval)
       }
       case SimpleAssignmentOperator => {
         val lref = evaluateExpression(l)
@@ -863,10 +845,20 @@ class Interpreter {
         val lval = getValue(lref)
         val rref = evaluateExpression(r)
         val rval = getValue(rref)
-        val res = evaluateCompoundableOperation(lval, compoundOp, rval)
+        val res = evaluateReusableOperation(lval, compoundOp, rval)
         guardAssignment(lref)
         putValue(lref, res)
         res
+      }
+    }
+    case PostfixExpression(l, op) => op match {
+      case IncrementOperator => {
+        val lhs = evaluateExpression(l)
+        guardAssignment(lhs)
+        val oldValue = toNumber(getValue(lhs))
+        val newValue = evaluateReusableOperation(oldValue, AdditionOperator, VNum(1))
+        putValue(lhs, newValue)
+        oldValue
       }
     }
     case NumericLiteral(d) => VNum(d)
