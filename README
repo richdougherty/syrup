@@ -14,7 +14,7 @@ neat things going for it.
 * Written in a functional style with immutable VM state. Again
   this design decision makes things run more slowly. But immutable
   state makes things easier to understand in lots of ways. Also
-  having a VM state object you can pass around could be handy if the
+  having a VM state object you can pass around would be handy if the
   interpreter were to ever be embedded within another program.
 
 * Uses delimited continuations to embed JavaScript control flow into
