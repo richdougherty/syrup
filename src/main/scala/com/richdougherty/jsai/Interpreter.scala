@@ -1287,6 +1287,12 @@ class Interpreter {
     val m = Machine(progCxt, None, h3, globalObj, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
+      globalObj.defineOwnProperty("undefined", PropDesc(
+          value = Some(VUndef),
+          writable = Some(false),
+          enumerable = Some(false),
+          configurable = Some(false)
+      ), true)
       instantiateDeclarationBindings(Nil)
       evaluateSourceElements(p.ses)
     })

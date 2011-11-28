@@ -44,6 +44,7 @@ object App {
       if (true) { x = 1; } else { x = 0; }
       x;
     """)
+    test("undefined");
   }
 
   def test(source: String): Unit = {
