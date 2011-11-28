@@ -123,7 +123,6 @@
             <configuration>
               <args>
                 <arg>-P:continuations:enable</arg>
-                <arg>-make:transitive</arg>
                 <arg>-dependencyfile</arg>
                 <arg>${project.build.directory}/.scala_dependencies</arg>
               </args>
