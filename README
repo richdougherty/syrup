@@ -5,7 +5,7 @@ Which is unlikely.
 Nonetheless I'm at least starting to write it, and it does have a few
 neat things going for it.
 
-* Written to closely follow the EcmaScript 5.1 specification. Where
+* Written to closely follow the ECMAScript 5.1 specification. Where
   possible I'm following the algorithms given in the spec, even if
   they're slow. The advantage of not making any effort to speed
   things up is that it makes the interpreter easy to read, write and
@@ -14,17 +14,19 @@ neat things going for it.
 * Written in a functional style with immutable VM state. Again
   this design decision makes things run more slowly. But immutable
   state makes things easier to understand in lots of ways. Also
-  having a VM state object you can pass around can be handy if the
-  interpreter is ever embedded within another program.
+  having a VM state object you can pass around could be handy if the
+  interpreter were to ever be embedded within another program.
 
-* Uses Scala's delimited continuations to embed JavaScript control
-  flow into the host language with minimum of fuss. For example, you
-  can throw a JavaScript exception within the Scala code and it will
-  be handled appropriately. (This is done with the "shift" operator,
-  not with Java's builtin exceptions.)
+* Uses delimited continuations to embed JavaScript control flow into
+  the host language with minimum of fuss. For example, you can throw
+  a JavaScript exception within the host code and it will be handled
+  appropriately. (This is all done with the "shift" operator, not
+  with the host language's builtin exceptions. No cheating.)
 
-* Uses delimited continuations to make changes to immutable state
-  via (sort of) familiar mutation operations.
+* Uses delimited continuations to update immutable state via familiar
+  mutation operations. Write immutable code in a mutable style!
+
+* Written in Scala.
 
 Currently Sugar uses Rhino for parsing (I was lazy). It is able to
 run amazing programs like this:
