@@ -110,14 +110,6 @@ class Interpreter {
     // Optional methods
     protected def ??? = error("Not implemented")
     def primitiveVal: Val = ???
-    def construct(args: List[Val]): VObj = ???
-    def hasInstance(obj: Val): Boolean = ???
-    def scope: LexEnv = ???
-    def formalParameters: List[String] = ???
-    def code: FunctionCode = ???
-    def targetFunction: VObj = ???
-    def boundThis: VObj = ???
-    def boundArguments: List[Val] = ???
     def `match`(s: String, index: Int): VObj = ???
     def parameterMap: VObj = ???
   }
@@ -125,10 +117,13 @@ class Interpreter {
   trait CallableObj {
     def call(thisObj: Val, args: List[Val]): ValOrRef @cps[MachineOp]
   }
+  trait ConstructingObj {
+    def construct(args: List[Val]): VObj
+    def hasInstance(obj: Val): Boolean
+  }
   trait BaseObj extends VObj {
     def props: Map[PropName, Prop] @cps[MachineOp]
     protected def setProps(newProps: Map[PropName, Prop]): Unit @cps[MachineOp]
-    def clazz: String = ???
     def extensible: Boolean = true
     def get(propertyName: String): Val @cps[MachineOp] = {
       val desc = getProperty(propertyName)
@@ -334,9 +329,30 @@ class Interpreter {
     }
   }
 
-  case class NativeObj(propsCell: Cell[Map[PropName, Prop]], prototype: Option[VObj]) extends BaseObj {
+  abstract class BasePropsObj(propsCell: Cell[Map[PropName, Prop]], val prototype: Option[VObj]) extends BaseObj {
       def props = @*(propsCell)
       def setProps(newProps: Map[PropName, Prop]) = propsCell @= newProps
+  }
+
+  case class NativeObj(propsCell: Cell[Map[PropName, Prop]], proto: Option[VObj]) extends BasePropsObj(propsCell, proto) {
+    def clazz = "Object"
+  }
+
+  trait FunctionObj extends BaseObj with CallableObj {
+    def clazz = "Function"
+    override def get(propertyName: String): Val @cps[MachineOp] = {
+      val v = super.get(propertyName)
+      if (propertyName == "caller") {
+        v match {
+          case v: FunctionCodeObj if isStrictModeCode(v.code) => moThrow("TypeError")
+          case _ => $$
+        }
+      } else $$
+      v
+    }
+  }
+  trait FunctionCodeObj extends FunctionObj {
+    def code: FunctionCode
   }
 
   type PropName = String
@@ -390,7 +406,7 @@ class Interpreter {
   }
   case class GlobalCode(ses: List[SourceElement]) extends Code
   case class EvalCode(ses: List[SourceElement], directStrictCall: Boolean) extends Code
-  case class FunctionCode(func: VObj, ses: List[SourceElement], strict: Boolean) extends Code
+  case class FunctionCode(params: List[String], ses: List[SourceElement], strict: Boolean) extends Code
 
   final case class AnnotatedStatement(stmt: Statement, labelSet: Set[Option[String]])
 
@@ -1022,7 +1038,7 @@ class Interpreter {
           evaluateStatement(AnnotatedStatement(trueStmt, Set.empty))
         } else {
           falseStmt match {
-            case None => Completion(CNormal, None, None)
+            case None => moComplete(Completion(CNormal, None, None))
             case Some(falseStmt) => evaluateStatement(AnnotatedStatement(falseStmt, Set.empty))
           }
         }
@@ -1133,20 +1149,13 @@ class Interpreter {
   }
 
   // Based on "Creating Function Objects" section in spec
-  def newFunctionObj(params: List[String], body: List[SourceElement], lexScope: LexEnv, strict: Boolean): VObj @cps[MachineOp] = {
-//    Create a new native ECMAScript object and let F be that object.
+  def newFunctionObj(params: List[String], body: List[SourceElement], scope: LexEnv, inStrict: Boolean): VObj @cps[MachineOp] = {
     val propsCell = @<(Map.empty[PropName, Prop])
-    val proto = getMachineObjs.func.prototype
-    val f = new BaseObj with CallableObj {
-      def props = @*(propsCell)
-      def setProps(newProps: Map[PropName, Prop]) = propsCell @= newProps
-
+    val funcProto = getMachineObjs.func.prototype
+    val f = new BasePropsObj(propsCell, funcProto) with FunctionCodeObj {
 //    Set all the internal methods, except for [[Get]], of F as described in 8.12.
-//
 //    Set the [[Class]] internal property of F to "Function".
-      override def clazz = "Function"
 //    Set the [[Prototype]] internal property of F to the standard built-in Function prototype object as specified in 15.3.3.1.
-      def prototype: Option[VObj] = proto
 //    Set the [[Get]] internal property of F as described in 15.3.5.4.
 //    Set the [[Call]] internal property of F as described in 13.2.1.
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = {
@@ -1180,15 +1189,13 @@ class Interpreter {
 //    Set the [[Construct]] internal property of F as described in 13.2.2.
 //    Set the [[HasInstance]] internal property of F as described in 15.3.5.3.
 //    Set the [[Scope]] internal property of F to the value of Scope.
-      override def scope = lexScope
 //    Let names be a List containing, in left to right textual order, the Strings corresponding to the identifiers of FormalParameterList.
 //    Set the [[FormalParameters]] internal property of F to names.
-      override def formalParameters = params
 //    Set the [[Code]] internal property of F to FunctionBody.
-      override def code = FunctionCode(this, body, strict)
+      val code = FunctionCode(params, body, inStrict)
 //    Set the [[Extensible]] internal property of F to true.
-      override def extensible = true
     }
+//    Create a new native ECMAScript object and let F be that object.
 //    Let len be the number of formal parameters specified in FormalParameterList. If no parameters are specified, let len be 0.
 //
 //    Call the [[DefineOwnProperty]] internal method of F with arguments "length", Property Descriptor {[[Value]]: len, [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false}, and false.
@@ -1237,8 +1244,7 @@ class Interpreter {
     }
     val strict = isStrictModeCode(cxt.code)
     cxt.code match {
-      case FunctionCode(func, _, _) => {
-        val names = func.formalParameters
+      case FunctionCode(names, _, _) => {
         val argCount = args.length
         var n = 0 // Manually increment because zipWithIndex didn't play with cps
         for (argName <- names.cps) {
@@ -1281,19 +1287,25 @@ class Interpreter {
   }
 
   def startingHeap: (Heap, MachineObjects) = {
-    def newObj(h: Heap, clazz: String, proto: Option[VObj]): (Heap, VObj) = {
+    def newObj(h: Heap, constructor: Cell[Map[PropName,Prop]] => VObj): (Heap, VObj) = {
       val (h1, props) = h.alloc[Map[PropName,Prop]]
       val h2 = h1.store(props, Map.empty[PropName, Prop])
-      val obj = NativeObj(props, proto)
+      val obj = constructor(props)
       (h2, obj)
     }
     val h1 = new Heap()
     // FIXME: Global obj's class and prototype is impl dependent - add config switches?
-    val (h2, globalObj) = newObj(h1, "Object", None)
-    val (h3, objProto) = newObj(h2, "Object", None)
-    val (h4, objObj) = newObj(h3, "Object", Some(objProto))
-    val (h5, funcProto) = newObj(h4, "Function", Some(objProto))
-    val (h6, funcObj) = newObj(h5, "Function", Some(funcProto))
+    val (h2, globalObj) = newObj(h1, NativeObj(_, None))
+    val (h3, objProto) = newObj(h2, NativeObj(_, None))
+    val (h4, objObj) = newObj(h3, NativeObj(_, Some(objProto)))
+    val (h5, funcProto) = newObj(h4, (propsCell: Cell[Map[PropName,Prop]]) => new BasePropsObj(propsCell, Some(objProto)) with CallableObj {
+      def clazz = "Function"
+      def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = VUndef
+    })
+    val (h6, funcObj) = newObj(h5, (propsCell: Cell[Map[PropName,Prop]]) => new BasePropsObj(propsCell, Some(objProto)) with CallableObj {
+      def clazz = "Function"
+      def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = ???
+    })
     val mos = new MachineObjects {
       val global = globalObj
       val obj = objObj

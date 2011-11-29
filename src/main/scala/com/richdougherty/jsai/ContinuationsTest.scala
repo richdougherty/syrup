@@ -50,4 +50,8 @@ object ContinuationsTest {
 
   // XXX: Test early returns
 
+  // XXX: Test inherit @cps annotation when return type omitted
+  // trait X { def a: Unit @cps[Unit] }
+  // class Y extends X { def a = () } 
+
 }
