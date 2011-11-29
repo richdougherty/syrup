@@ -118,8 +118,8 @@ class Interpreter {
     def call(thisObj: Val, args: List[Val]): ValOrRef @cps[MachineOp]
   }
   trait ConstructingObj {
-    def construct(args: List[Val]): VObj
-    def hasInstance(obj: Val): Boolean
+    def construct(args: List[Val]): VObj @cps[MachineOp]
+    def hasInstance(obj: Val): Boolean @cps[MachineOp]
   }
   trait BaseObj extends VObj {
     def props: Map[PropName, Prop] @cps[MachineOp]
@@ -338,7 +338,7 @@ class Interpreter {
     def clazz = "Object"
   }
 
-  trait FunctionObj extends BaseObj with CallableObj {
+  trait FunctionObj extends BaseObj with CallableObj with ConstructingObj {
     def clazz = "Function"
     override def get(propertyName: String): Val @cps[MachineOp] = {
       val v = super.get(propertyName)
@@ -349,6 +349,32 @@ class Interpreter {
         }
       } else $$
       v
+    }
+    def hasInstance(v: Val): Boolean @cps[MachineOp] = {
+      // FIXME: This is pretty ugly.
+      v match {
+        case v: VObj => {
+          val o = get("prototype")
+          o match {
+            case o: VObj => {
+              def loop(v: VObj): Boolean = {
+                val v2 = v.prototype
+                v2 match {
+                  case None => false
+                  case Some(v3) => if (sameValue(o, v3)) {
+                    true
+                  } else {
+                    loop(v3)
+                  }
+                }
+              }
+              loop(v)
+            }
+            case _ => moThrow("TypeError")
+          }
+        }
+        case _ => $(false)
+      }
     }
   }
   trait FunctionCodeObj extends FunctionObj {
@@ -1187,6 +1213,19 @@ class Interpreter {
         }
       }
 //    Set the [[Construct]] internal property of F as described in 13.2.2.
+      def construct(args: List[Val]): VObj @cps[MachineOp] = {
+        val proto = get("prototype")
+        val fixedProto = proto match {
+          case proto: VObj => $(proto)
+          case _ => getMachineObjs.obj.prototype.get
+        }
+        val obj = NativeObj(@<(Map.empty[PropName, Prop]), Some(fixedProto))
+        val result = call(obj, args)
+        result match {
+          case result: VObj => result
+          case _ => obj
+        }
+      }
 //    Set the [[HasInstance]] internal property of F as described in 15.3.5.3.
 //    Set the [[Scope]] internal property of F to the value of Scope.
 //    Let names be a List containing, in left to right textual order, the Strings corresponding to the identifiers of FormalParameterList.
@@ -1196,14 +1235,30 @@ class Interpreter {
 //    Set the [[Extensible]] internal property of F to true.
     }
 //    Create a new native ECMAScript object and let F be that object.
+
 //    Let len be the number of formal parameters specified in FormalParameterList. If no parameters are specified, let len be 0.
-//
 //    Call the [[DefineOwnProperty]] internal method of F with arguments "length", Property Descriptor {[[Value]]: len, [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false}, and false.
-//
+//    val len = params.length
+//    f.defineOwnProperty("length", PropDesc(
+//        value = Some(VNum(len)),
+//        writable = Some(false),
+//        enumerable = Some(false),
+//        configurable = Some(false)), false)
+
 //    Let proto be the result of creating a new object as would be constructed by the expression new Object()where Object is the standard built-in constructor with that name.
-//
 //    Call the [[DefineOwnProperty]] internal method of proto with arguments "constructor", Property Descriptor {[[Value]]: F, { [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: true}, and false.
-//
+//    val proto = newOperator(getMachineObjs.obj, Nil)
+//    proto.defineOwnProperty("constructor", PropDesc(
+//        value = Some(f),
+//        writable = Some(true),
+//        enumerable = Some(false),
+//        configurable = Some(true)), false)
+//    f.defineOwnProperty("prototype", PropDesc(
+//        value = Some(proto),
+//        writable = Some(true),
+//        enumerable = Some(false),
+//        configurable = Some(true)), false)
+
 //    Call the [[DefineOwnProperty]] internal method of F with arguments "prototype", Property Descriptor {[[Value]]: proto, { [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: false}, and false.
 //
 //    If Strict is true, then
