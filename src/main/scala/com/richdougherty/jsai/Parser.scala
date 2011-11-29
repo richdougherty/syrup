@@ -45,6 +45,7 @@ object Parser {
   case class BooleanLiteral(b: Boolean) extends LiteralExpression
   case class NumericLiteral(d: Double) extends LiteralExpression
   case class StringLiteral(d: String) extends LiteralExpression
+  case class ObjectInitialiser(pas: List[PropAssign]) extends Expression
   sealed trait MemberExpression extends Expression
   sealed trait PrimaryExpression extends MemberExpression
   case class Identifier(s: String) extends PrimaryExpression
@@ -76,6 +77,15 @@ object Parser {
   case object IncrementOperator extends UnaryOperator
   case object DecrementOperator extends UnaryOperator
   case object NegativeOperator extends UnaryOperator
+
+  sealed trait PropAssign
+  case class ValuePropAssign(n: PropAssignName, v: Expression) extends PropAssign
+  //case class GetPropAssign(n: PropAssignName, body: List[SourceElement]) extends PropAssign
+  //case class SetPropAssign(n: PropAssignName, params: List[String], body: List[SourceElement]) extends PropAssign
+  sealed trait PropAssignName
+  case class IdentifierPropAssignName(n: String) extends PropAssignName
+  //case class StringLiteralPropAssignName(n: StringLiteral) extends PropAssignName
+  //case class NumericLiteralPropAssignName(n: NumericLiteral) extends PropAssignName
 
   import JavaConversions.iterableAsScalaIterable
   
@@ -152,6 +162,19 @@ object Parser {
     node match {
       case nl: ast.NumberLiteral => NumericLiteral(nl.getNumber())
       case sl: ast.StringLiteral => StringLiteral(sl.getValue())
+      case ol: ast.ObjectLiteral => ObjectInitialiser(
+        ol.getElements().toList.map {
+          case op: ast.ObjectProperty => {
+            val n = op.getLeft() match {
+              case n: ast.Name => IdentifierPropAssignName(n.getIdentifier())
+            }
+            if (op.getType() == Token.COLON) {
+              val v = transformExpression(op.getRight())
+              ValuePropAssign(n, v)
+            } else error("Unsupported ObjectProperty type: " + op.getType())
+          }
+        }
+      )
       case in: ast.InfixExpression =>
         InfixExpression(transformExpression(in.getLeft()), transformBinaryOperator(in.getOperator()), transformExpression(in.getRight()))
       case un: ast.UnaryExpression if un.isPostfix() =>

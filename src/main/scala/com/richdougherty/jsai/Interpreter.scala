@@ -418,6 +418,8 @@ class Interpreter {
     assert(!(isDataDescriptor(this) && isAccessorDescriptor(this)))
   }
 
+  final case class PropIdent(name: String, desc: PropDesc)
+
   case class Machine(cxt: ExecContext, ch: Option[CompletionHandler], heap: Heap, objs: MachineObjects, globalEnv: LexEnv)
   case class ExecContext(varEnv: LexEnv, lexEnv: LexEnv, thisBinding: VObj, code: Code)
   type CompletionHandler = (Machine, Completion) => (Machine, MachineOp)
@@ -963,6 +965,33 @@ class Interpreter {
     case BooleanLiteral(b) => VBool(b)
     case NumericLiteral(d) => VNum(d)
     case StringLiteral(s) => VStr(s)
+    case ObjectInitialiser(pas) => {
+      def newEmptyObj: VObj @cps[MachineOp] = {
+        NativeObj(@<(Map.empty), Some(getMachineObjs.obj.getProperty("prototype")))
+      }
+      def evaluatePropAssignName(pan: PropAssignName): String = pan match {
+        case IdentifierPropAssignName(n) => n
+      }
+      def evaluatePropAssign(pa: PropAssign): PropIdent @cps[MachineOp] = pa match {
+        case ValuePropAssign(pan, expr) => {
+          val propName = evaluatePropAssignName(pan)
+          val exprValue = evaluateExpression(expr)
+          val propVal = getValue(exprValue)
+          val desc = PropDesc(
+              value = Some(propVal),
+              writable = Some(true),
+              enumerable = Some(true),
+              configurable = Some(true))
+          PropIdent(propName, desc)
+        }
+      }
+      val obj = newEmptyObj
+      for (pa <- pas.cps) {
+        val propId = evaluatePropAssign(pa)
+        obj.defineOwnProperty(propId.name, propId.desc, false)
+      }
+      obj
+    }
     case CallExpression(target, args) => {
 //    Let ref be the result of evaluating MemberExpression.
       val ref = evaluateExpression(target)
