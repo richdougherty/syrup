@@ -379,6 +379,10 @@ class Interpreter {
   case class Machine(cxt: ExecContext, ch: Option[CompletionHandler], heap: Heap, globalObj: VObj, globalEnv: LexEnv)
   case class ExecContext(varEnv: LexEnv, lexEnv: LexEnv, thisBinding: VObj, code: Code)
   type CompletionHandler = (Machine, Completion) => (Machine, MachineOp)
+  trait MachineObjects {
+    def global: VObj
+    def obj: VObj
+  }
 
   sealed trait Code {
     def ses: List[SourceElement]
@@ -1271,6 +1275,25 @@ class Interpreter {
     ()
   }
 
+  def startingHeap: (Heap, MachineObjects) = {
+    def newObj(h: Heap, proto: Option[VObj]): (Heap, VObj) = {
+      val (h1, props) = h.alloc[Map[PropName,Prop]]
+      val h2 = h1.store(props, Map.empty[PropName, Prop])
+      val obj = NativeObj(props, proto)
+      (h2, obj)
+    }
+    val h1 = new Heap()
+    // FIXME: Global obj's prototype is impl dependent - add config switch?
+    val (h2, globalObj) = newObj(h1, None)
+    val (h3, objProto) = newObj(h2, None)
+    val (h4, objObj) = newObj(h3, Some(objProto))
+    val mos = new MachineObjects {
+      val global = globalObj
+      val obj = objObj
+    }
+    (h4, mos)
+  }
+
   def interpret(programSource: String): Completion = {
     val p = Parser.parse(programSource)
 
@@ -1278,16 +1301,13 @@ class Interpreter {
     if (p.ses.isEmpty) return Completion(CNormal, None, None) // Optimization from spec
 
     val globalCode = GlobalCode(p.ses)
-    val h1 = new Heap()
-    val (h2, globalObjProps) = h1.alloc[Map[PropName,Prop]]
-    val h3 = h2.store(globalObjProps, Map.empty[PropName,Prop])
-    val globalObj = NativeObj(globalObjProps, None)
-    val globalEnv = LexEnv(ObjectEnvRec(globalObj), None)
-    val progCxt = ExecContext(globalEnv, globalEnv, globalObj, globalCode)
-    val m = Machine(progCxt, None, h3, globalObj, globalEnv)
+    val (h, mos) = startingHeap
+    val globalEnv = LexEnv(ObjectEnvRec(mos.global), None)
+    val progCxt = ExecContext(globalEnv, globalEnv, mos.global, globalCode)
+    val m = Machine(progCxt, None, h, mos.global, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
-      globalObj.defineOwnProperty("undefined", PropDesc(
+      mos.global.defineOwnProperty("undefined", PropDesc(
           value = Some(VUndef),
           writable = Some(false),
           enumerable = Some(false),
