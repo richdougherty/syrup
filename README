@@ -19,7 +19,7 @@ neat things going for it.
 
 * Uses delimited continuations to embed JavaScript control flow into
   the host language with minimum of fuss. For example, you can throw
-  a JavaScript exception within the host code and it will be handled
+  a JavaScript exception within host code and it will be handled
   appropriately. (This is all done with the "shift" operator, not
   with the host language's builtin exceptions. No cheating.)
 
@@ -28,7 +28,7 @@ neat things going for it.
 
 * Written in Scala.
 
-Currently Sugar uses Rhino for parsing (I was lazy). It is able to
+Currently Syrup uses Rhino for parsing (I was lazy). Syrup is able to
 run amazing programs like this:
 
   for (var i = 0; i < 10; i++) {}
