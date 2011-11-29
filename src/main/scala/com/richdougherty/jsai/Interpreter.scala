@@ -376,12 +376,13 @@ class Interpreter {
     assert(!(isDataDescriptor(this) && isAccessorDescriptor(this)))
   }
 
-  case class Machine(cxt: ExecContext, ch: Option[CompletionHandler], heap: Heap, globalObj: VObj, globalEnv: LexEnv)
+  case class Machine(cxt: ExecContext, ch: Option[CompletionHandler], heap: Heap, objs: MachineObjects, globalEnv: LexEnv)
   case class ExecContext(varEnv: LexEnv, lexEnv: LexEnv, thisBinding: VObj, code: Code)
   type CompletionHandler = (Machine, Completion) => (Machine, MachineOp)
   trait MachineObjects {
     def global: VObj
     def obj: VObj
+    def func: VObj
   }
 
   sealed trait Code {
@@ -601,9 +602,12 @@ class Interpreter {
     (m.copy(ch = ch), k(()))
   }
 
-  def getGlobalObj = moAccess[VObj] {(m: Machine, k: VObj => MachineOp) =>
-    k(m.globalObj)
+  def getMachineObjs = moAccess[MachineObjects] {(m: Machine, k: MachineObjects => MachineOp) =>
+    k(m.objs)
   }
+
+  // FIXME: Remove this method?
+  def getGlobalObj = getMachineObjs.global
 
   def getGlobalEnv = moAccess[LexEnv] {(m: Machine, k: LexEnv => MachineOp) =>
     k(m.globalEnv)
@@ -1132,6 +1136,7 @@ class Interpreter {
   def newFunctionObj(params: List[String], body: List[SourceElement], lexScope: LexEnv, strict: Boolean): VObj @cps[MachineOp] = {
 //    Create a new native ECMAScript object and let F be that object.
     val propsCell = @<(Map.empty[PropName, Prop])
+    val proto = getMachineObjs.func.prototype
     val f = new BaseObj with CallableObj {
       def props = @*(propsCell)
       def setProps(newProps: Map[PropName, Prop]) = propsCell @= newProps
@@ -1141,7 +1146,7 @@ class Interpreter {
 //    Set the [[Class]] internal property of F to "Function".
       override def clazz = "Function"
 //    Set the [[Prototype]] internal property of F to the standard built-in Function prototype object as specified in 15.3.3.1.
-      def prototype: Option[VObj] = None // FIXME: Stub
+      def prototype: Option[VObj] = proto
 //    Set the [[Get]] internal property of F as described in 15.3.5.4.
 //    Set the [[Call]] internal property of F as described in 13.2.1.
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = {
@@ -1276,20 +1281,23 @@ class Interpreter {
   }
 
   def startingHeap: (Heap, MachineObjects) = {
-    def newObj(h: Heap, proto: Option[VObj]): (Heap, VObj) = {
+    def newObj(h: Heap, clazz: String, proto: Option[VObj]): (Heap, VObj) = {
       val (h1, props) = h.alloc[Map[PropName,Prop]]
       val h2 = h1.store(props, Map.empty[PropName, Prop])
       val obj = NativeObj(props, proto)
       (h2, obj)
     }
     val h1 = new Heap()
-    // FIXME: Global obj's prototype is impl dependent - add config switch?
-    val (h2, globalObj) = newObj(h1, None)
-    val (h3, objProto) = newObj(h2, None)
-    val (h4, objObj) = newObj(h3, Some(objProto))
+    // FIXME: Global obj's class and prototype is impl dependent - add config switches?
+    val (h2, globalObj) = newObj(h1, "Object", None)
+    val (h3, objProto) = newObj(h2, "Object", None)
+    val (h4, objObj) = newObj(h3, "Object", Some(objProto))
+    val (h5, funcProto) = newObj(h4, "Function", Some(objProto))
+    val (h6, funcObj) = newObj(h5, "Function", Some(funcProto))
     val mos = new MachineObjects {
       val global = globalObj
       val obj = objObj
+      val func = funcObj
     }
     (h4, mos)
   }
@@ -1304,10 +1312,10 @@ class Interpreter {
     val (h, mos) = startingHeap
     val globalEnv = LexEnv(ObjectEnvRec(mos.global), None)
     val progCxt = ExecContext(globalEnv, globalEnv, mos.global, globalCode)
-    val m = Machine(progCxt, None, h, mos.global, globalEnv)
+    val m = Machine(progCxt, None, h, mos, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
-      mos.global.defineOwnProperty("undefined", PropDesc(
+      m.objs.global.defineOwnProperty("undefined", PropDesc(
           value = Some(VUndef),
           writable = Some(false),
           enumerable = Some(false),
