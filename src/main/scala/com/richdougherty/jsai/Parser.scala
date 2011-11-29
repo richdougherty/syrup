@@ -150,6 +150,8 @@ object Parser {
 
   def transformExpression(node: Node): Expression = {
     node match {
+      case nl: ast.NumberLiteral => NumericLiteral(nl.getNumber())
+      case sl: ast.StringLiteral => StringLiteral(sl.getValue())
       case in: ast.InfixExpression =>
         InfixExpression(transformExpression(in.getLeft()), transformBinaryOperator(in.getOperator()), transformExpression(in.getRight()))
       case un: ast.UnaryExpression if un.isPostfix() =>
@@ -160,8 +162,6 @@ object Parser {
         case Token.TRUE => BooleanLiteral(true)
         case Token.FALSE => BooleanLiteral(false)
       }
-      case nl: ast.NumberLiteral => NumericLiteral(nl.getNumber())
-      case sl: ast.StringLiteral => StringLiteral(sl.getValue())
       case fc: ast.FunctionCall => CallExpression(
         transformMemberExpression(fc.getTarget()),
         (for (arg <- fc.getArguments()) yield transformExpression(arg)).toList
