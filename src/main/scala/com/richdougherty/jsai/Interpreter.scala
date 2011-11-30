@@ -966,9 +966,6 @@ class Interpreter {
     case NumericLiteral(d) => VNum(d)
     case StringLiteral(s) => VStr(s)
     case ObjectInitialiser(pas) => {
-      def newEmptyObj: VObj @cps[MachineOp] = {
-        NativeObj(@<(Map.empty), Some(getMachineObjs.obj.getProperty("prototype")))
-      }
       def evaluatePropAssignName(pan: PropAssignName): String = pan match {
         case IdentifierPropAssignName(n) => n
       }
@@ -1193,6 +1190,11 @@ class Interpreter {
     LexEnv(envRec, outer)
   }
 
+  // Steps 3-7 of "new Object([value])" in spec
+  def newEmptyObj: VObj @cps[MachineOp] = {
+    NativeObj(@<(Map.empty), Some(getMachineObjs.obj.getProperty("prototype")))
+ }
+
   // Based on "Function Definition" section in spec
   def newFunctionObjFromDeclaration(fd: FunctionDeclaration, lexEnv: LexEnv, strict: Boolean): VObj @cps[MachineOp] = {
     val funcEnv = newDeclarativeEnvironment(Some(lexEnv))
@@ -1267,29 +1269,28 @@ class Interpreter {
 
 //    Let len be the number of formal parameters specified in FormalParameterList. If no parameters are specified, let len be 0.
 //    Call the [[DefineOwnProperty]] internal method of F with arguments "length", Property Descriptor {[[Value]]: len, [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false}, and false.
-//    val len = params.length
-//    f.defineOwnProperty("length", PropDesc(
-//        value = Some(VNum(len)),
-//        writable = Some(false),
-//        enumerable = Some(false),
-//        configurable = Some(false)), false)
+    val len = VNum(params.length)
+    f.defineOwnProperty("length", PropDesc(
+        value = Some(len),
+        writable = Some(false),
+        enumerable = Some(false),
+        configurable = Some(false)), false)
 
 //    Let proto be the result of creating a new object as would be constructed by the expression new Object()where Object is the standard built-in constructor with that name.
 //    Call the [[DefineOwnProperty]] internal method of proto with arguments "constructor", Property Descriptor {[[Value]]: F, { [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: true}, and false.
-//    val proto = newOperator(getMachineObjs.obj, Nil)
-//    proto.defineOwnProperty("constructor", PropDesc(
-//        value = Some(f),
-//        writable = Some(true),
-//        enumerable = Some(false),
-//        configurable = Some(true)), false)
-//    f.defineOwnProperty("prototype", PropDesc(
-//        value = Some(proto),
-//        writable = Some(true),
-//        enumerable = Some(false),
-//        configurable = Some(true)), false)
-
 //    Call the [[DefineOwnProperty]] internal method of F with arguments "prototype", Property Descriptor {[[Value]]: proto, { [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: false}, and false.
-//
+    val proto = newEmptyObj
+    proto.defineOwnProperty("constructor", PropDesc(
+        value = Some(f),
+        writable = Some(true),
+        enumerable = Some(false),
+        configurable = Some(true)), false)
+    f.defineOwnProperty("prototype", PropDesc(
+        value = Some(proto),
+        writable = Some(true),
+        enumerable = Some(false),
+        configurable = Some(true)), false)
+
 //    If Strict is true, then
 //
 //        Let thrower be the [[ThrowTypeError]] function Object (13.2.3).
