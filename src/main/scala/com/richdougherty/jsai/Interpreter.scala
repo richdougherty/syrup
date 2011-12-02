@@ -420,10 +420,11 @@ class Interpreter {
 
   final case class PropIdent(name: String, desc: PropDesc)
 
-  case class Machine(cxt: ExecContext, ch: Option[CompletionHandler], heap: Heap, objs: MachineObjects, globalEnv: LexEnv)
+  case class Machine(cxt: Option[ExecContext], ch: Option[CompletionHandler], heap: Heap, objs: MachineObjects)
   case class ExecContext(varEnv: LexEnv, lexEnv: LexEnv, thisBinding: VObj, code: Code)
   type CompletionHandler = (Machine, Completion) => (Machine, MachineOp)
   case class MachineObjects(
+    globalEnv: Option[LexEnv] = None,
     global: Option[VObj] = None,
     obj: Option[VObj] = None,
     func: Option[VObj] = None
@@ -631,11 +632,11 @@ class Interpreter {
   }
 
   def currentCxt = moAccess[ExecContext] {(m: Machine, k: ExecContext => MachineOp) =>
-    k(m.cxt)
+    k(m.cxt.get)
   }
 
   def setCurrentCxt(cxt: ExecContext) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
-    (m.copy(cxt = cxt), k(()))
+    (m.copy(cxt = Some(cxt)), k(()))
   }
 
   def currentCompletionHandler = moAccess[Option[CompletionHandler]] {(m: Machine, k: Option[CompletionHandler] => MachineOp) =>
@@ -654,7 +655,7 @@ class Interpreter {
   def getGlobalObj = getMachineObjs.global.get
 
   def getGlobalEnv = moAccess[LexEnv] {(m: Machine, k: LexEnv => MachineOp) =>
-    k(m.globalEnv)
+    k(m.objs.globalEnv.get)
   }
 
   def getDirectivePrologue(ses: List[SourceElement]): List[String] = {
@@ -1391,7 +1392,9 @@ class Interpreter {
       def clazz = "Function"
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = ???
     })
+    val globalEnv = LexEnv(ObjectEnvRec(globalObj), None)
     val mos = MachineObjects(
+      globalEnv = Some(globalEnv),
       global = Some(globalObj),
       obj = Some(objObj),
       func = Some(funcObj)
@@ -1405,11 +1408,10 @@ class Interpreter {
     val strictMode = hasUseStrictDirective(p.ses)
     if (p.ses.isEmpty) return Completion(CNormal, None, None) // Optimization from spec
 
-    val globalCode = GlobalCode(p.ses)
     val (h, mos) = startingHeap
-    val globalEnv = LexEnv(ObjectEnvRec(mos.global.get), None)
-    val progCxt = ExecContext(globalEnv, globalEnv, mos.global.get, globalCode)
-    val m = Machine(progCxt, None, h, mos, globalEnv)
+    val globalCode = GlobalCode(p.ses)
+    val progCxt = ExecContext(mos.globalEnv.get, mos.globalEnv.get, mos.global.get, globalCode)
+    val m = Machine(Some(progCxt), None, h, mos)
 
     val (m1, c) = runMachineOp(m, reset {
       m.objs.global.get.defineOwnProperty("undefined", PropDesc(
