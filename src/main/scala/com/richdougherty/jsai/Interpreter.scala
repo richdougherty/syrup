@@ -427,7 +427,8 @@ class Interpreter {
     globalEnv: Option[LexEnv] = None,
     global: Option[VObj] = None,
     obj: Option[VObj] = None,
-    func: Option[VObj] = None
+    func: Option[VObj] = None,
+    throwTypeError: Option[VObj with CallableObj] = None
   )
 
   sealed trait Code {
@@ -1299,7 +1300,19 @@ class Interpreter {
 //        Call the [[DefineOwnProperty]] internal method of F with arguments "caller", PropertyDescriptor {[[Get]]: thrower, [[Set]]: thrower, [[Enumerable]]: false, [[Configurable]]: false}, and false.
 //
 //        Call the [[DefineOwnProperty]] internal method of F with arguments "arguments", PropertyDescriptor {[[Get]]: thrower, [[Set]]: thrower, [[Enumerable]]: false, [[Configurable]]: false}, and false.
-//
+    if (inStrict) {
+      val thrower = getMachineObjs.throwTypeError.get
+      f.defineOwnProperty("caller", PropDesc(
+          get = Some(thrower),
+          set = Some(thrower),
+          enumerable = Some(false),
+          configurable = Some(true)), false)
+      f.defineOwnProperty("arguments", PropDesc(
+          get = Some(thrower),
+          set = Some(thrower),
+          enumerable = Some(false),
+          configurable = Some(true)), false)
+    } else $$
     f
   }
 
@@ -1377,9 +1390,12 @@ class Interpreter {
     def setMachineObjs(mos: MachineObjects) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
       (m.copy(objs = mos), k(()))
     }
+
     val globalObj = NativeObj(newProps, None)
+
     val objProto = NativeObj(newProps, None)
     val objObj = NativeObj(newProps, Some(objProto))
+
     val funcProtoProps = newProps
     val funcProto = new BasePropsObj(funcProtoProps, Some(objProto)) with CallableObj {
       def clazz = "Function"
@@ -1390,12 +1406,23 @@ class Interpreter {
       def clazz = "Function"
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = ???
     }
+
+    // FIXME: Stub. Real implementation must be a proper function.
+    // Putting off due to cycle between proper function's getters and
+    // this object.
+    val throwTypeErrorProps = newProps
+    val throwTypeErrorObj = new BasePropsObj(funcProtoProps, Some(objProto)) with CallableObj {
+      def clazz = "Function"
+      def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = moThrow("TypeError")
+    }
+
     val globalEnv = LexEnv(ObjectEnvRec(globalObj), None)
     setMachineObjs(getMachineObjs.copy(
       globalEnv = Some(globalEnv),
       global = Some(globalObj),
       obj = Some(objObj),
-      func = Some(funcObj)
+      func = Some(funcObj),
+      throwTypeError = Some(throwTypeErrorObj)
     ))
   }
 
