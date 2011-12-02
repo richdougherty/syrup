@@ -61,5 +61,10 @@ object ContinuationsTest {
 //      f()
 //    }
   }
-  
+
+  def test5(f: () => Int @cps[Unit]): Unit @cps[Unit] = {
+    class X(i: Int)
+    val x1 = new X(f())
+    //val x2 = new X(f()) {}
+  }
 }

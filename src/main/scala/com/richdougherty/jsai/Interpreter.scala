@@ -1372,34 +1372,31 @@ class Interpreter {
     ()
   }
 
-  def startingHeap: (Heap, MachineObjects) = {
-    def newObj(h: Heap, constructor: Cell[Map[PropName,Prop]] => VObj): (Heap, VObj) = {
-      val (h1, props) = h.alloc[Map[PropName,Prop]]
-      val h2 = h1.store(props, Map.empty[PropName, Prop])
-      val obj = constructor(props)
-      (h2, obj)
+  def initStandardObjects(): Unit @cps[MachineOp] = {
+    def newProps = @<(Map.empty[PropName, Prop])
+    def setMachineObjs(mos: MachineObjects) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
+      (m.copy(objs = mos), k(()))
     }
-    val h1 = new Heap()
-    // FIXME: Global obj's class and prototype is impl dependent - add config switches?
-    val (h2, globalObj) = newObj(h1, NativeObj(_, None))
-    val (h3, objProto) = newObj(h2, NativeObj(_, None))
-    val (h4, objObj) = newObj(h3, NativeObj(_, Some(objProto)))
-    val (h5, funcProto) = newObj(h4, (propsCell: Cell[Map[PropName,Prop]]) => new BasePropsObj(propsCell, Some(objProto)) with CallableObj {
+    val globalObj = NativeObj(newProps, None)
+    val objProto = NativeObj(newProps, None)
+    val objObj = NativeObj(newProps, Some(objProto))
+    val funcProtoProps = newProps
+    val funcProto = new BasePropsObj(funcProtoProps, Some(objProto)) with CallableObj {
       def clazz = "Function"
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = VUndef
-    })
-    val (h6, funcObj) = newObj(h5, (propsCell: Cell[Map[PropName,Prop]]) => new BasePropsObj(propsCell, Some(objProto)) with CallableObj {
+    }
+    val funcObjProps = newProps
+    val funcObj = new BasePropsObj(funcObjProps, Some(objProto)) with CallableObj {
       def clazz = "Function"
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = ???
-    })
+    }
     val globalEnv = LexEnv(ObjectEnvRec(globalObj), None)
-    val mos = MachineObjects(
+    setMachineObjs(getMachineObjs.copy(
       globalEnv = Some(globalEnv),
       global = Some(globalObj),
       obj = Some(objObj),
       func = Some(funcObj)
-    )
-    (h4, mos)
+    ))
   }
 
   def interpret(programSource: String): Completion = {
@@ -1408,13 +1405,15 @@ class Interpreter {
     val strictMode = hasUseStrictDirective(p.ses)
     if (p.ses.isEmpty) return Completion(CNormal, None, None) // Optimization from spec
 
-    val (h, mos) = startingHeap
-    val globalCode = GlobalCode(p.ses)
-    val progCxt = ExecContext(mos.globalEnv.get, mos.globalEnv.get, mos.global.get, globalCode)
-    val m = Machine(Some(progCxt), None, h, mos)
+    val m = Machine(None, None, new Heap(), MachineObjects())
 
     val (m1, c) = runMachineOp(m, reset {
-      m.objs.global.get.defineOwnProperty("undefined", PropDesc(
+      initStandardObjects()
+      val globalCode = GlobalCode(p.ses)
+      val mos = getMachineObjs
+      val progCxt = ExecContext(mos.globalEnv.get, mos.globalEnv.get, mos.global.get, globalCode)
+      setCurrentCxt(progCxt)
+      getGlobalObj.defineOwnProperty("undefined", PropDesc(
           value = Some(VUndef),
           writable = Some(false),
           enumerable = Some(false),
