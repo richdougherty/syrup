@@ -423,11 +423,11 @@ class Interpreter {
   case class Machine(cxt: ExecContext, ch: Option[CompletionHandler], heap: Heap, objs: MachineObjects, globalEnv: LexEnv)
   case class ExecContext(varEnv: LexEnv, lexEnv: LexEnv, thisBinding: VObj, code: Code)
   type CompletionHandler = (Machine, Completion) => (Machine, MachineOp)
-  trait MachineObjects {
-    def global: VObj
-    def obj: VObj
-    def func: VObj
-  }
+  case class MachineObjects(
+    global: Option[VObj] = None,
+    obj: Option[VObj] = None,
+    func: Option[VObj] = None
+  )
 
   sealed trait Code {
     def ses: List[SourceElement]
@@ -651,7 +651,7 @@ class Interpreter {
   }
 
   // FIXME: Remove this method?
-  def getGlobalObj = getMachineObjs.global
+  def getGlobalObj = getMachineObjs.global.get
 
   def getGlobalEnv = moAccess[LexEnv] {(m: Machine, k: LexEnv => MachineOp) =>
     k(m.globalEnv)
@@ -1192,7 +1192,7 @@ class Interpreter {
 
   // Steps 3-7 of "new Object([value])" in spec
   def newEmptyObj: VObj @cps[MachineOp] = {
-    NativeObj(@<(Map.empty), Some(getMachineObjs.obj.getProperty("prototype")))
+    NativeObj(@<(Map.empty), Some(getMachineObjs.obj.get.getProperty("prototype")))
  }
 
   // Based on "Function Definition" section in spec
@@ -1208,7 +1208,7 @@ class Interpreter {
   // Based on "Creating Function Objects" section in spec
   def newFunctionObj(params: List[String], body: List[SourceElement], scope: LexEnv, inStrict: Boolean): VObj @cps[MachineOp] = {
     val propsCell = @<(Map.empty[PropName, Prop])
-    val funcProto = getMachineObjs.func.prototype
+    val funcProto = getMachineObjs.func.get.prototype
     val f = new BasePropsObj(propsCell, funcProto) with FunctionCodeObj {
 //    Set all the internal methods, except for [[Get]], of F as described in 8.12.
 //    Set the [[Class]] internal property of F to "Function".
@@ -1218,16 +1218,16 @@ class Interpreter {
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = {
         val strict = isStrictModeCode(code)
         val thisBinding = if (strict) {
-          thisArg
+          thisArg.asInstanceOf[VObj]
         } else if (thisArg == VNull || thisArg == VUndef) {
           getGlobalObj
         } else if (typ(thisArg) != TyObj) {
           toObject(thisArg)
         } else {
-          thisArg
+          thisArg.asInstanceOf[VObj]
         }
         val localEnv = newDeclarativeEnvironment(Some(scope))
-        val cxt = ExecContext(localEnv, localEnv, thisBinding.asInstanceOf[VObj], code)
+        val cxt = ExecContext(localEnv, localEnv, thisBinding, code)
         val parentCxt = currentCxt
         setCurrentCxt(cxt)
         instantiateDeclarationBindings(args)
@@ -1248,7 +1248,7 @@ class Interpreter {
         val proto = get("prototype")
         val fixedProto = proto match {
           case proto: VObj => $(proto)
-          case _ => getMachineObjs.obj.prototype.get
+          case _ => getMachineObjs.obj.get.prototype.get
         }
         val obj = NativeObj(@<(Map.empty[PropName, Prop]), Some(fixedProto))
         val result = call(obj, args)
@@ -1391,11 +1391,11 @@ class Interpreter {
       def clazz = "Function"
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = ???
     })
-    val mos = new MachineObjects {
-      val global = globalObj
-      val obj = objObj
-      val func = funcObj
-    }
+    val mos = MachineObjects(
+      global = Some(globalObj),
+      obj = Some(objObj),
+      func = Some(funcObj)
+    )
     (h4, mos)
   }
 
@@ -1407,12 +1407,12 @@ class Interpreter {
 
     val globalCode = GlobalCode(p.ses)
     val (h, mos) = startingHeap
-    val globalEnv = LexEnv(ObjectEnvRec(mos.global), None)
-    val progCxt = ExecContext(globalEnv, globalEnv, mos.global, globalCode)
+    val globalEnv = LexEnv(ObjectEnvRec(mos.global.get), None)
+    val progCxt = ExecContext(globalEnv, globalEnv, mos.global.get, globalCode)
     val m = Machine(progCxt, None, h, mos, globalEnv)
 
     val (m1, c) = runMachineOp(m, reset {
-      m.objs.global.defineOwnProperty("undefined", PropDesc(
+      m.objs.global.get.defineOwnProperty("undefined", PropDesc(
           value = Some(VUndef),
           writable = Some(false),
           enumerable = Some(false),

@@ -54,4 +54,12 @@ object ContinuationsTest {
   // trait X { def a: Unit @cps[Unit] }
   // class Y extends X { def a = () } 
 
+  def test4(x: Boolean, f: () => Int @cps[Unit]): Unit @cps[Unit] = {
+//    val u: Int = if (x) {
+//      3
+//    } else {
+//      f()
+//    }
+  }
+  
 }
