@@ -427,7 +427,9 @@ class Interpreter {
     globalEnv: Option[LexEnv] = None,
     global: Option[VObj] = None,
     obj: Option[VObj] = None,
+    objProto: Option[VObj] = None,
     func: Option[VObj] = None,
+    funcProto: Option[VObj] = None,
     throwTypeError: Option[VObj with CallableObj] = None
   )
 
@@ -1194,7 +1196,7 @@ class Interpreter {
 
   // Steps 3-7 of "new Object([value])" in spec
   def newEmptyObj: VObj @cps[MachineOp] = {
-    NativeObj(@<(Map.empty), Some(getMachineObjs.obj.get.getProperty("prototype")))
+    NativeObj(@<(Map.empty), Some(getMachineObjs.objProto.get))
  }
 
   // Based on "Function Definition" section in spec
@@ -1210,10 +1212,8 @@ class Interpreter {
   // Based on "Creating Function Objects" section in spec
   def newFunctionObj(params: List[String], body: List[SourceElement], scope: LexEnv, inStrict: Boolean): VObj @cps[MachineOp] = {
     val propsCell = @<(Map.empty[PropName, Prop])
-    val funcProto = getMachineObjs.func.get.prototype
-    val f = new BasePropsObj(propsCell, funcProto) with FunctionCodeObj {
-//    Set all the internal methods, except for [[Get]], of F as described in 8.12.
-//    Set the [[Class]] internal property of F to "Function".
+    val funcProto = getMachineObjs.funcProto.get
+    val f = new BasePropsObj(propsCell, Some(funcProto)) with FunctionCodeObj {
 //    Set the [[Prototype]] internal property of F to the standard built-in Function prototype object as specified in 15.3.3.1.
 //    Set the [[Get]] internal property of F as described in 15.3.5.4.
 //    Set the [[Call]] internal property of F as described in 13.2.1.
@@ -1250,7 +1250,7 @@ class Interpreter {
         val proto = get("prototype")
         val fixedProto = proto match {
           case proto: VObj => $(proto)
-          case _ => getMachineObjs.obj.get.prototype.get
+          case _ => getMachineObjs.objProto.get
         }
         val obj = NativeObj(@<(Map.empty[PropName, Prop]), Some(fixedProto))
         val result = call(obj, args)
@@ -1391,22 +1391,40 @@ class Interpreter {
       (m.copy(objs = mos), k(()))
     }
 
+    // Global Object
     val globalObj = NativeObj(newProps, None)
 
+    // Object Prototype Object
     val objProto = NativeObj(newProps, None)
-    val objObj = NativeObj(newProps, Some(objProto))
 
+    // Function Prototype Object
     val funcProtoProps = newProps
     val funcProto = new BasePropsObj(funcProtoProps, Some(objProto)) with CallableObj {
       def clazz = "Function"
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = VUndef
     }
+
+    // Object Constructor
+    val objObj = NativeObj(newProps, Some(funcProto))
+    objObj.defineOwnProperty("prototype", PropDesc(
+        value = Some(objProto),
+        writable = Some(false),
+        enumerable = Some(false),
+        configurable = Some(false)), true)
+
+    // Function Constructor
     val funcObjProps = newProps
     val funcObj = new BasePropsObj(funcObjProps, Some(objProto)) with CallableObj {
       def clazz = "Function"
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = ???
     }
+    funcObj.defineOwnProperty("prototype", PropDesc(
+        value = Some(funcProto),
+        writable = Some(false),
+        enumerable = Some(false),
+        configurable = Some(false)), true)
 
+    // [[ThrowTypeError]] Function Object
     // FIXME: Stub. Real implementation must be a proper function.
     // Putting off due to cycle between proper function's getters and
     // this object.
@@ -1421,7 +1439,9 @@ class Interpreter {
       globalEnv = Some(globalEnv),
       global = Some(globalObj),
       obj = Some(objObj),
+      objProto = Some(objProto),
       func = Some(funcObj),
+      funcProto = Some(funcProto),
       throwTypeError = Some(throwTypeErrorObj)
     ))
   }
