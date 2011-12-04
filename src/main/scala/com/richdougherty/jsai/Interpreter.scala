@@ -850,6 +850,12 @@ class Interpreter {
     case _ => error("Unsupported object conversion: " + v)
   }
 
+  def checkObjectCoercible(v: Val): Unit @cps[MachineOp] = v match {
+    case VUndef => moThrow("TypeError")
+    case VNull => moThrow("TypeError")
+    case _ => ()
+  }
+
   def isCallable(v: Val): Boolean @cps[MachineOp] = v match {
     case o: VObj => o.isInstanceOf[CallableObj]
     case _ => false
@@ -992,6 +998,16 @@ class Interpreter {
         obj.defineOwnProperty(propId.name, propId.desc, false)
       }
       obj
+    }
+    case PropertyAccessor(base, propertyName) => {
+      val baseReference = evaluateExpression(base)
+      val baseValue = getValue(baseReference)
+      val propertyNameReference = evaluateExpression(propertyName)
+      val propertyNameValue = getValue(propertyNameReference)
+      checkObjectCoercible(baseValue)
+      val propertyNameString = toString(propertyNameValue)
+      val strict = isStrictModeCode(currentCxt.code)
+      Ref(baseValue, propertyNameString.d, strict)
     }
     case CallExpression(target, args) => {
 //    Let ref be the result of evaluating MemberExpression.

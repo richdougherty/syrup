@@ -46,6 +46,7 @@ object Parser {
   case class NumericLiteral(d: Double) extends LiteralExpression
   case class StringLiteral(d: String) extends LiteralExpression
   case class ObjectInitialiser(pas: List[PropAssign]) extends Expression
+  case class PropertyAccessor(base: Expression, propertyName: Expression) extends Expression
   sealed trait MemberExpression extends Expression
   sealed trait PrimaryExpression extends MemberExpression
   case class Identifier(s: String) extends PrimaryExpression
@@ -174,6 +175,10 @@ object Parser {
             } else error("Unsupported ObjectProperty type: " + op.getType())
           }
         }
+      )
+      case eg: ast.ElementGet => PropertyAccessor(
+        transformExpression(eg.getTarget()),
+        transformExpression(eg.getElement())
       )
       case in: ast.InfixExpression =>
         InfixExpression(transformExpression(in.getLeft()), transformBinaryOperator(in.getOperator()), transformExpression(in.getRight()))
