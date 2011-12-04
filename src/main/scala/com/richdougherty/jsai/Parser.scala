@@ -45,6 +45,7 @@ object Parser {
   case class BooleanLiteral(b: Boolean) extends LiteralExpression
   case class NumericLiteral(d: Double) extends LiteralExpression
   case class StringLiteral(d: String) extends LiteralExpression
+  case class ArrayInitialiser(elems: List[Option[Expression]]) extends Expression
   case class ObjectInitialiser(pas: List[PropAssign]) extends Expression
   case class PropertyAccessor(base: Expression, propertyName: Expression) extends Expression
   sealed trait MemberExpression extends Expression
@@ -163,6 +164,11 @@ object Parser {
     node match {
       case nl: ast.NumberLiteral => NumericLiteral(nl.getNumber())
       case sl: ast.StringLiteral => StringLiteral(sl.getValue())
+      case al: ast.ArrayLiteral => ArrayInitialiser(
+        al.getElements().toList.map {
+          case n: Node => Some(transformExpression(n))
+        }
+      )
       case ol: ast.ObjectLiteral => ObjectInitialiser(
         ol.getElements().toList.map {
           case op: ast.ObjectProperty => {

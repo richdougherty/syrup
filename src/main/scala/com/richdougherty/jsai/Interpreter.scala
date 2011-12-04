@@ -117,7 +117,7 @@ class Interpreter {
   trait CallableObj {
     def call(thisObj: Val, args: List[Val]): ValOrRef @cps[MachineOp]
   }
-  trait ConstructingObj {
+  trait ConstructorObj {
     def construct(args: List[Val]): VObj @cps[MachineOp]
     def hasInstance(obj: Val): Boolean @cps[MachineOp]
   }
@@ -338,7 +338,7 @@ class Interpreter {
     def clazz = "Object"
   }
 
-  trait FunctionObj extends BaseObj with CallableObj with ConstructingObj {
+  trait FunctionObj extends BaseObj with CallableObj with ConstructorObj {
     def clazz = "Function"
     override def get(propertyName: String): Val @cps[MachineOp] = {
       val v = super.get(propertyName)
@@ -430,6 +430,7 @@ class Interpreter {
     objProto: Option[VObj] = None,
     func: Option[VObj] = None,
     funcProto: Option[VObj] = None,
+    array: Option[VObj with ConstructorObj] = None,
     throwTypeError: Option[VObj with CallableObj] = None
   )
 
@@ -840,6 +841,30 @@ class Interpreter {
     v.asInstanceOf[VNum] // FIXME: Stub
   }
 
+  def toUint32(v: Val): VNum = {
+    val number = toNumber(v)
+    var d = number.d
+
+    // From Rhino code
+    var l = d.toLong
+    if (l == d) {
+      // This covers -0.0 as well
+      return VNum(l & 0xffffffffL)
+    }
+
+    if (d != d || d.isInfinite)
+    {
+      return VNum(0)
+    }
+
+    d = if (d >= 0) Math.floor(d) else Math.ceil(d);
+
+    // 0x100000000 gives me a numeric overflow...
+    val two32 = 4294967296.0;
+    l = Math.IEEEremainder(d, two32).toLong
+    VNum(l & 0xffffffffL)
+  }
+
   def toObject(v: Val): VObj @cps[MachineOp] = v match {
     case VUndef => moThrow("TypeError")
     case VNull => moThrow("TypeError")
@@ -975,6 +1000,15 @@ class Interpreter {
     case BooleanLiteral(b) => VBool(b)
     case NumericLiteral(d) => VNum(d)
     case StringLiteral(s) => VStr(s)
+    case ArrayInitialiser(elems) => {
+      val array = getMachineObjs.array.get.construct(Nil)
+      def evaluateElements(elems: List[Option[Expression]]): Int @cps[MachineOp] = {
+        0 // FIXME: Stub
+      }
+      val pad = evaluateElements(elems)
+      array.put("length", VNum(pad), false)
+      array
+    }
     case ObjectInitialiser(pas) => {
       def evaluatePropAssignName(pan: PropAssignName): String = pan match {
         case IdentifierPropAssignName(n) => n
@@ -1210,6 +1244,7 @@ class Interpreter {
     LexEnv(envRec, outer)
   }
 
+  // FIXME: Replace with call to getMachineObjs.obj.get.construct(Nil)
   // Steps 3-7 of "new Object([value])" in spec
   def newEmptyObj: VObj @cps[MachineOp] = {
     NativeObj(@<(Map.empty), Some(getMachineObjs.objProto.get))
@@ -1420,6 +1455,9 @@ class Interpreter {
       def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = VUndef
     }
 
+    // Array Prototype Object
+    val arrayProto = NativeObj(newProps, Some(objProto))
+
     // Object Constructor
     val objObj = NativeObj(newProps, Some(funcProto))
     objObj.defineOwnProperty("prototype", PropDesc(
@@ -1430,12 +1468,51 @@ class Interpreter {
 
     // Function Constructor
     val funcObjProps = newProps
-    val funcObj = new BasePropsObj(funcObjProps, Some(objProto)) with CallableObj {
-      def clazz = "Function"
-      def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = ???
+    val funcObj = new BasePropsObj(funcObjProps, Some(funcProto)) with FunctionObj {
+      def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = construct(args)
+      def construct(args: List[Val]): VObj @cps[MachineOp] = ???
     }
     funcObj.defineOwnProperty("prototype", PropDesc(
         value = Some(funcProto),
+        writable = Some(false),
+        enumerable = Some(false),
+        configurable = Some(false)), true)
+
+    // Array Constructor
+    val arrayObjProps = newProps
+    val arrayObj = new BasePropsObj(arrayObjProps, Some(funcProto)) with FunctionObj {
+      def call(thisArg: Val, args: List[Val]): ValOrRef @cps[MachineOp] = construct(args)
+      def construct(args: List[Val]): VObj @cps[MachineOp] = {
+        val props = if (args.length == 1) {
+          val len = args.head
+          if (len.isInstanceOf[VNum]) {
+            val len32 = toUint32(len)
+            if (len == len32) {
+              $(Map(
+                "length" -> DataProp(len, true, false, false)
+              ))
+            } else {
+              moThrow("RangeError")
+            }
+          } else {
+            Map(
+              "length" -> DataProp(VNum(0), true, false, false),
+              "0" -> DataProp(len, true, true, true)
+            )
+          }
+        } else {
+          Map(
+              "length" -> DataProp(VNum(args.length), true, false, false)
+          ) ++ (for ((arg, i) <- args.zipWithIndex) yield (i.toString, DataProp(arg, true, true, true)))
+        }
+        val propsCell = newProps
+        propsCell @= props
+        // FIXME: Make proper array object with overridden defineOwnProperty and clazz methods
+        NativeObj(propsCell, Some(arrayProto))
+      }
+    }
+    arrayObj.defineOwnProperty("prototype", PropDesc(
+        value = Some(arrayProto),
         writable = Some(false),
         enumerable = Some(false),
         configurable = Some(false)), true)
@@ -1458,6 +1535,8 @@ class Interpreter {
       objProto = Some(objProto),
       func = Some(funcObj),
       funcProto = Some(funcProto),
+      array = Some(arrayObj),
+      //arrayProto = Some(arrayProto),
       throwTypeError = Some(throwTypeErrorObj)
     ))
   }
