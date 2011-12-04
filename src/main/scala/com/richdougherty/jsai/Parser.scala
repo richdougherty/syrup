@@ -180,6 +180,11 @@ object Parser {
         transformExpression(eg.getTarget()),
         transformExpression(eg.getElement())
       )
+      // "The dot notation is explained by the following syntactic conversion..."
+      case in: ast.InfixExpression if in.getOperator() == Token.GETPROP => PropertyAccessor(
+        transformExpression(in.getLeft()),
+        StringLiteral(in.getRight().asInstanceOf[ast.Name].getIdentifier())
+      )
       case in: ast.InfixExpression =>
         InfixExpression(transformExpression(in.getLeft()), transformBinaryOperator(in.getOperator()), transformExpression(in.getRight()))
       case un: ast.UnaryExpression if un.isPostfix() =>

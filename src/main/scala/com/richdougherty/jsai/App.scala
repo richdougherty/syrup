@@ -45,7 +45,7 @@ object App {
       x;
     """)
     test("undefined");
-    test("var x = {x: 1, y: 2}; x['y'];");
+    test("var x = {x: 1, y: 2}; x['y']; x.y;");
   }
 
   def test(source: String): Unit = {
