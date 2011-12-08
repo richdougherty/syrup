@@ -420,7 +420,7 @@ class Interpreter {
 
   final case class PropIdent(name: String, desc: PropDesc)
 
-  case class Machine(cxt: Option[ExecContext], ch: Option[CompletionHandler], heap: Heap, objs: MachineObjects)
+  case class Machine(cxt: Option[ExecContext], ch: Option[CompletionHandler], heap: Heap, trace: List[AnnotatedStatement], objs: MachineObjects)
   case class ExecContext(varEnv: LexEnv, lexEnv: LexEnv, thisBinding: VObj, code: Code)
   type CompletionHandler = (Machine, Completion) => (Machine, MachineOp)
   case class MachineObjects(
@@ -660,6 +660,14 @@ class Interpreter {
 
   def getGlobalEnv = moAccess[LexEnv] {(m: Machine, k: LexEnv => MachineOp) =>
     k(m.objs.globalEnv.get)
+  }
+
+  def tracePush(as: AnnotatedStatement) = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
+    (m.copy(trace = as::m.trace), k(()))
+  }
+
+  def tracePop = moUpdate[Unit] {(m: Machine, k: Unit => MachineOp) =>
+    (m.copy(trace = m.trace.tail), k(()))
   }
 
   def getDirectivePrologue(ses: List[SourceElement]): List[String] = {
@@ -1111,6 +1119,7 @@ class Interpreter {
   }
 
   def evaluateStatement(as: AnnotatedStatement): Nothing @cps[MachineOp] = {
+    tracePush(as)
     val c = as.stmt match {
       case BlockStatement(stmts) => {
         def loop(stmts: List[Statement], prevComp: Completion): Nothing @cps[MachineOp] = stmts match {
@@ -1205,6 +1214,7 @@ class Interpreter {
         ))
       }
     }
+    tracePop
     moComplete(c)
   }
 
@@ -1541,13 +1551,13 @@ class Interpreter {
     ))
   }
 
-  def interpret(programSource: String): Completion = {
+  def interpret(programSource: String): (Completion, List[Any]) = {
     val p = Parser.parse(programSource)
 
     val strictMode = hasUseStrictDirective(p.ses)
-    if (p.ses.isEmpty) return Completion(CNormal, None, None) // Optimization from spec
+    if (p.ses.isEmpty) return (Completion(CNormal, None, None), Nil) // Optimization from spec
 
-    val m = Machine(None, None, new Heap(), MachineObjects())
+    val m = Machine(None, None, new Heap(), Nil, MachineObjects())
 
     val (m1, c) = runMachineOp(m, reset {
       initStandardObjects()
@@ -1564,7 +1574,7 @@ class Interpreter {
       instantiateDeclarationBindings(Nil)
       evaluateSourceElements(p.ses)
     })
-    c
+    (c, m1.trace)
   }
 
 }
